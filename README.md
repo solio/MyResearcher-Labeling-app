@@ -6,6 +6,8 @@
 `MyResearcher-ModelTraining/schema/semantic-schema-calibrated-v0.2.1.json`（只读，class_order 未改动）。
 中文释义、问题句、正例、易混淆说明在 `schema/annotation-schema.v1.json`，owner 可直接编辑，服务重启后生效。
 
+> 完整交付文档见 **[使用说明与接口说明.md](使用说明与接口说明.md)**（界面操作、HTTP API、CLI、数据契约、localStorage 约定）。
+
 ## 启动
 
 ```bash

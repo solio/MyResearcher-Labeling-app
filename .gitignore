@@ -1,5 +1,49 @@
-data/
+# ---- Python 中间产物 ----
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.python-version
+
+# ---- 测试/静态检查缓存 ----
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+htmlcov/
+
+# ---- Node/npm 中间产物（本项目零 npm，防御性忽略） ----
+node_modules/
+bower_components/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+.parcel-cache/
+.next/
+.nuxt/
+dist-ejs/
+
+# ---- 前端构建输出 ----
+static/*.map
+static/*.bundle.js
+
+# ---- 编辑器 / 系统 ----
 .DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ---- 运行时数据 / 阻塞记录 ----
+data/
 BLOCKED.md
