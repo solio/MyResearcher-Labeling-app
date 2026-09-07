@@ -1,0 +1,216 @@
+{
+  "annotation_schema_version": "annotation-schema.v1",
+  "schema_version": "semantic-schema-calibrated-v0.2.1",
+  "note": "owner 可编辑的释义文件。label id 与顺序抄录自 MyResearcher-ModelTraining/schema/semantic-schema-calibrated-v0.2.1.json 的 class_order（只读），顺序不可改动；本文件其余中文释义、问题句、正例、易混淆说明均可由 owner 编辑。",
+  "head_order": [
+    "target_mode",
+    "stance",
+    "emotion_primary",
+    "emotion_target",
+    "action_tendency",
+    "context_dependency",
+    "reasoning_tags"
+  ],
+  "dispositions": [
+    { "id": "无法判断", "description": "反复读后仍无法给出稳定标注" },
+    { "id": "缺少上下文", "description": "需要发帖背景、盘面快照等外部信息才能判断" },
+    { "id": "跳过", "description": "暂时不想标这条，标记后不再进入 resume 队列" },
+    { "id": "稍后再看", "description": "先放下，之后会回来继续标（仍是未完成）" }
+  ],
+  "invariants": [
+    "UNKNOWN≠NEUTRAL：UNKNOWN 是信息不足无法判断；NEUTRAL 是有依据的中性判断。疑问句、愿望、黑话常落 UNKNOWN，而不是 NEUTRAL。",
+    "NONE_EXPLICIT≠CALM：NONE_EXPLICIT 是没有可观察的显式情绪；CALM 必须作者明确写出平静、从容。全文没有情绪词只能得 NONE_EXPLICIT，不能推 CALM。",
+    "NO_ACTION_SIGNAL≠WATCH：NO_ACTION_SIGNAL 是作者没有自己的交易倾向（纯愿望、情绪宣泄、描述他人动作）；WATCH 是作者自己在等待、观察、犹豫。两者互斥。",
+    "看空≠恐惧：BEAR 是对未来方向的负向预期，FEAR 是情绪。冷静陈述看空 = BEAR 且 FEAR 不成立；写‘慌了/吓死’才是 FEAR。",
+    "愿望/条件动作/他人动作≠作者已执行动作：‘希望涨’‘涨了就买’‘别人在买’‘建议买’ 都不是作者已执行或已承诺的 BUY/ADD/HOLD。",
+    "“不割肉”不是 SELL；“不追高”不是 BUY。否定式表达描述的是不做某动作。",
+    "拒绝作答/弃权不是任何普通标签；无法稳定归类时该 head 用 UNKNOWN 或 disposition，不得硬塞最接近的标签。"
+  ],
+  "heads": {
+    "target_mode": {
+      "type": "single",
+      "question": "这条内容主要在讨论什么？",
+      "definition_zh": "判断文本的主要讨论对象：目标股票本身、跨股比较、大盘泛谈，还是对象不明。",
+      "select_when": "先找文本里出现次数最多、被作为主语的股票/市场；比较关系成立时用 CROSS_TARGET。",
+      "not_select_when": "目标股票只是发帖位置、实际在聊大盘或板块时，不要选 ON_TARGET。",
+      "positive_examples": [
+        "‘它家的新产能爬坡太慢了’ → ON_TARGET",
+        "‘比隔壁那只有想象力，它家就是稳’ → CROSS_TARGET",
+        "‘大盘这量能别谈个股了’ → MARKET_GENERAL"
+      ],
+      "confusable": [
+        "ON_TARGET vs CROSS_TARGET：出现别只股票不一定是 CROSS_TARGET，只有构成有意义的比较或因果连接才算。",
+        "MARKET_GENERAL vs UNKNOWN：聊大盘是 MARKET_GENERAL；连在聊什么都看不懂才是 UNKNOWN。"
+      ],
+      "labels": [
+        { "id": "ON_TARGET", "name_zh": "讨论目标股票", "description": "主要讨论 board_context 对应股票本身。" },
+        { "id": "CROSS_TARGET", "name_zh": "跨目标比较", "description": "将目标股票与其他股票、板块或市场做有意义的比较或因果连接。" },
+        { "id": "MARKET_GENERAL", "name_zh": "大盘/板块泛谈", "description": "主要讨论整个市场或板块，目标股票只是发帖位置。" },
+        { "id": "UNKNOWN", "name_zh": "对象不明", "description": "无法识别真正讨论对象。" }
+      ]
+    },
+    "stance": {
+      "type": "single",
+      "question": "作者对未来方向的预期是？",
+      "definition_zh": "作者对股票/市场未来价格、价值或经营结果的方向性预期。",
+      "select_when": "有明确的未来正向/负向预期时选 BULL/BEAR；只陈述当下事实、相对表现选 NEUTRAL；正反证据都实质存在选 MIXED。",
+      "not_select_when": "疑问、愿望、纯黑话没有方向承诺时，不要硬选 BULL/BEAR，通常落 UNKNOWN。",
+      "positive_examples": [
+        "‘这位置不上车就没了’ → BULL",
+        "‘这报表看下来明年还得跌’ → BEAR",
+        "‘今天换手率8%，量价齐平’ → NEUTRAL"
+      ],
+      "confusable": [
+        "BEAR vs UNKNOWN：骂公司烂不等于看空股价，要看是否有对未来结果的负向预期。",
+        "NEUTRAL vs UNKNOWN：有信息的中性判断是 NEUTRAL；信息不足以判断方向才是 UNKNOWN。"
+      ],
+      "labels": [
+        { "id": "BULL", "name_zh": "看多", "description": "对未来价格、价值或经营结果有明确正向预期。" },
+        { "id": "BEAR", "name_zh": "看空", "description": "对未来价格、价值或经营结果有明确负向预期。" },
+        { "id": "NEUTRAL", "name_zh": "中性", "description": "表达当前事实、相对表现或中性判断，没有未来方向承诺。" },
+        { "id": "MIXED", "name_zh": "多空混合", "description": "同一文本同时存在有实质证据的正反方向。" },
+        { "id": "UNKNOWN", "name_zh": "方向不明", "description": "文本不足以判断方向；疑问、愿望和黑话常落在这里。" }
+      ]
+    },
+    "emotion_primary": {
+      "type": "single",
+      "question": "作者的主要情绪是？",
+      "definition_zh": "文本中作者显式表达的主导情绪。",
+      "select_when": "只选作者自己表达出来的情绪；CALM 必须有平静从容的字面表达。",
+      "not_select_when": "不要由缺少情绪词推断 CALM；有情绪痕迹但归类不稳时选 UNKNOWN。",
+      "positive_examples": [
+        "‘慌得我一晚上没睡’ → FEAR",
+        "‘无所谓，涨跌随便，我心态稳得很’ → CALM",
+        "‘就发个财报，没啥情绪’ → NONE_EXPLICIT"
+      ],
+      "confusable": [
+        "FEAR vs ANXIETY：怕已迫近的损失是 FEAR；对不确定性的担忧犹豫是 ANXIETY。",
+        "ANGER vs FRUSTRATION：指向他人/归责的攻击是 ANGER；长期不达预期、被套的无力感是 FRUSTRATION。",
+        "FOMO vs HOPE：怕错过而想追是 FOMO；盼好事发生是 HOPE。",
+        "NONE_EXPLICIT vs CALM：没写情绪是 NONE_EXPLICIT；写出了‘淡定/从容’才是 CALM。"
+      ],
+      "labels": [
+        { "id": "FEAR", "name_zh": "恐惧", "description": "明确害怕损失或迫近威胁。" },
+        { "id": "ANXIETY", "name_zh": "焦虑", "description": "担忧、不确定、犹豫或风险关注。" },
+        { "id": "ANGER", "name_zh": "愤怒", "description": "明确愤怒、攻击或归责。" },
+        { "id": "FRUSTRATION", "name_zh": "挫败", "description": "持续不达预期、跑输、被套或无力感带来的挫败。" },
+        { "id": "REGRET", "name_zh": "后悔", "description": "对自己过去决策后悔。" },
+        { "id": "HOPE", "name_zh": "希望", "description": "希望某个正向结果发生。" },
+        { "id": "EXCITEMENT", "name_zh": "兴奋", "description": "对强势、异动或结果兴奋。" },
+        { "id": "FOMO", "name_zh": "错失恐惧", "description": "因害怕错过而产生追入压力。" },
+        { "id": "CALM", "name_zh": "平静", "description": "作者明确表达平静、从容；不能由缺少情绪词推断。" },
+        { "id": "NONE_EXPLICIT", "name_zh": "无显式情绪", "description": "没有可观察的显式情绪。" },
+        { "id": "UNKNOWN", "name_zh": "情绪不明", "description": "有情绪痕迹但无法稳定归类。" }
+      ]
+    },
+    "emotion_target": {
+      "type": "single",
+      "question": "情绪指向什么对象？",
+      "definition_zh": "emotion_primary 所指情绪的目标对象。",
+      "select_when": "跟随 emotion_primary 的指向选 PRICE/POSITION/COMPANY/MARKET/OTHER。",
+      "not_select_when": "emotion_primary=NONE_EXPLICIT 时必须选 NOT_APPLICABLE；emotion_primary=UNKNOWN 时通常选 UNKNOWN。",
+      "positive_examples": [
+        "‘这走势看得我心慌’ → PRICE",
+        "‘我的仓位想想就焦虑’ → POSITION",
+        "‘这管理层气的我’ → COMPANY"
+      ],
+      "confusable": [
+        "PRICE vs MARKET：怕这只票跌是 PRICE；怕大盘崩是 MARKET。",
+        "NOT_APPLICABLE 只在 emotion_primary=NONE_EXPLICIT 时使用，不是‘不知道’。"
+      ],
+      "labels": [
+        { "id": "PRICE", "name_zh": "价格走势", "description": "情绪指向价格或走势。" },
+        { "id": "POSITION", "name_zh": "持仓盈亏", "description": "指向自己的持仓、盈亏或仓位。" },
+        { "id": "COMPANY", "name_zh": "公司经营", "description": "指向公司、管理层或经营。" },
+        { "id": "MARKET", "name_zh": "市场环境", "description": "指向板块、市场或资金环境。" },
+        { "id": "OTHER", "name_zh": "其他对象", "description": "其他可识别对象。" },
+        { "id": "NOT_APPLICABLE", "name_zh": "不适用", "description": "emotion_primary=NONE_EXPLICIT 时必选。" },
+        { "id": "UNKNOWN", "name_zh": "对象不明", "description": "情绪对象无法识别。" }
+      ]
+    },
+    "action_tendency": {
+      "type": "single",
+      "question": "作者自己的交易倾向是？",
+      "definition_zh": "作者对自己持仓表达出的动作倾向；只看作者本人，不看他人。",
+      "select_when": "只统计作者自己的建仓/加仓/持有/做T/减仓/卖出/观望倾向。",
+      "not_select_when": "纯愿望、条件句、别人在买卖、建议别人买卖，都不构成作者动作；没有作者动作时选 NO_ACTION_SIGNAL。",
+      "positive_examples": [
+        "‘我已经全仓了’ → BUY（已完成动作）",
+        "‘先看看，等回踩再说’ → WATCH",
+        "‘要是能涨我就把它嫁了’ → 愿望，NO_ACTION_SIGNAL"
+      ],
+      "confusable": [
+        "WATCH vs NO_ACTION_SIGNAL：作者本人在等在看是 WATCH；压根没有作者动作线索是 NO_ACTION_SIGNAL。",
+        "HOLD vs NO_ACTION_SIGNAL：‘不卖/拿住’是 HOLD；情绪宣泄里没提持仓动作是 NO_ACTION_SIGNAL。",
+        "‘不割肉’不是 SELL，‘不追高’不是 BUY，否定式不是动作。"
+      ],
+      "labels": [
+        { "id": "BUY", "name_zh": "买入倾向", "description": "倾向新建仓或从无仓转为持有。" },
+        { "id": "ADD", "name_zh": "加仓", "description": "倾向在已有仓位上加仓。" },
+        { "id": "HOLD", "name_zh": "继续持有", "description": "明确继续持有、格局或不卖。" },
+        { "id": "DO_T", "name_zh": "做T", "description": "明确进行日内或波段T操作。" },
+        { "id": "REDUCE", "name_zh": "减仓", "description": "已或拟部分减仓但不完全退出。" },
+        { "id": "SELL", "name_zh": "卖出/清仓", "description": "明确计划清仓、卖出或回避该资产。" },
+        { "id": "WATCH", "name_zh": "观望", "description": "等待、观察或犹豫，尚未形成买卖执行承诺。" },
+        { "id": "NO_ACTION_SIGNAL", "name_zh": "无动作信号", "description": "没有作者自己的交易倾向；包括纯愿望、情绪宣泄和描述他人动作。" },
+        { "id": "UNKNOWN", "name_zh": "动作不明", "description": "存在动作线索但无法判断具体类别。" }
+      ]
+    },
+    "context_dependency": {
+      "type": "single",
+      "question": "判断核心语义需要多少外部上下文？",
+      "definition_zh": "脱离发帖时的盘面、公司事件、黑话典故等外部上下文后，核心投资语义还能恢复多少。",
+      "select_when": "文本+board_context 就能判断选 SELF_CONTAINED；缺部分背景影响个别字段选 PARTIAL_CONTEXT；连核心含义都无法恢复选 EXTERNAL_CONTEXT_REQUIRED。",
+      "not_select_when": "只是引用了常识概念不算需要外部上下文。",
+      "positive_examples": [
+        "‘今天放量涨停，封单很厚’ → SELF_CONTAINED",
+        "‘又来熟悉的剧本’ → PARTIAL_CONTEXT（‘剧本’指什么需要背景）",
+        "‘还差一个消息面’ → EXTERNAL_CONTEXT_REQUIRED"
+      ],
+      "confusable": [
+        "PARTIAL_CONTEXT vs EXTERNAL_CONTEXT_REQUIRED：核心方向还能判断是 PARTIAL；没外部信息就完全读不懂才是 EXTERNAL。"
+      ],
+      "labels": [
+        { "id": "SELF_CONTAINED", "name_zh": "自足", "description": "仅凭文本和 board_context 即可判断核心语义。" },
+        { "id": "PARTIAL_CONTEXT", "name_zh": "部分依赖", "description": "核心状态可保留，但参照对象、黑话或盘面背景缺失会影响部分字段。" },
+        { "id": "EXTERNAL_CONTEXT_REQUIRED", "name_zh": "需外部上下文", "description": "没有外部上下文就连核心投资含义都无法恢复。" },
+        { "id": "UNKNOWN", "name_zh": "依赖不明", "description": "无法判断依赖程度。" }
+      ]
+    },
+    "reasoning_tags": {
+      "type": "multi",
+      "question": "文本用了哪些推理依据？（可多选）",
+      "definition_zh": "支撑作者观点/情绪/动作的全部推理依据，15 个标签可多选。",
+      "select_when": "文本中每出现一种依据就勾一个；完全没有理由勾 NO_REASON_GIVEN。",
+      "not_select_when": "不要因为‘感觉像’而多勾；语义不可恢复才用 UNKNOWN，不确定时宁缺勿滥。",
+      "positive_examples": [
+        "‘业绩预增50%，PE才10倍’ → [FUNDAMENTAL, VALUATION]",
+        "‘跟着大V买就行了’ → [SOCIAL_PROOF]",
+        "‘就是想买，没为什么’ → [NO_REASON_GIVEN]"
+      ],
+      "confusable": [
+        "NEWS_EVENT vs RUMOR：公告/官方发布是 NEWS_EVENT；群聊传闻、小作文是 RUMOR。",
+        "RELATIVE_PERFORMANCE vs CROSS_STOCK_REFERENCE：只比较强弱是前者；把另一只票当替代或因果链条是后者。",
+        "MACRO_POLICY vs THEME_NARRATIVE：指数/政策环境是前者；题材、产业叙事、轮动是后者。",
+        "至少勾一个标签；没有理由时用 NO_REASON_GIVEN 而不是留空。"
+      ],
+      "labels": [
+        { "id": "FUNDAMENTAL", "name_zh": "基本面", "description": "业绩、收入、利润、产品、订单等经营证据。" },
+        { "id": "VALUATION", "name_zh": "估值", "description": "PE、PB、估值高低或价格相对价值。" },
+        { "id": "TECHNICAL_PRICE", "name_zh": "技术面/价格", "description": "价格、涨跌、量能、K线、支撑阻力等。" },
+        { "id": "FLOW_POSITIONING", "name_zh": "资金/筹码", "description": "主力、机构、资金流、仓位或筹码。" },
+        { "id": "NEWS_EVENT", "name_zh": "新闻事件", "description": "公告、财报发布、政策事件或明确新闻。" },
+        { "id": "RUMOR", "name_zh": "传闻/小作文", "description": "小作文、传闻或未经确认消息。" },
+        { "id": "SOCIAL_PROOF", "name_zh": "他人观点/从众", "description": "他人观点、社区一致性或从众证据。" },
+        { "id": "MACRO_POLICY", "name_zh": "宏观/政策", "description": "指数、宏观经济或政策环境。" },
+        { "id": "THEME_NARRATIVE", "name_zh": "题材叙事", "description": "题材、产业叙事或风格轮动。" },
+        { "id": "NO_REASON_GIVEN", "name_zh": "未给理由", "description": "给出态度或愿望但没有理由。" },
+        { "id": "RELATIVE_PERFORMANCE", "name_zh": "相对强弱", "description": "目标股票相对同行或板块的强弱。" },
+        { "id": "CROSS_STOCK_REFERENCE", "name_zh": "跨股引用", "description": "另一只股票作为比较、替代或因果链条。" },
+        { "id": "SARCASM_IRONY", "name_zh": "反讽", "description": "反话、讽刺或嘲弄是理解语义的重要证据。" },
+        { "id": "WORDPLAY", "name_zh": "谐音/黑话", "description": "谐音、倒置、缩写或个人化用语。" },
+        { "id": "UNKNOWN", "name_zh": "依据不明", "description": "无法识别推理依据。" }
+      ]
+    }
+  }
+}
