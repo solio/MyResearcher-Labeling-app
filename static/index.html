@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>MyResearcher 标注</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<link rel="icon" href="/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#14532d">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="app">
+
+  <section id="screen-start" class="screen">
+    <header class="start-header">
+      <h1>MyResearcher 标注</h1>
+      <p class="muted">单人手机标注工具 · 禁止展示任何模型预填答案</p>
+    </header>
+    <div class="start-body">
+      <h2>1 · 选择 Batch</h2>
+      <div id="batch-list" class="pick-list"></div>
+      <h2>2 · 选择 Head（本次会话锁定）</h2>
+      <div id="head-list" class="head-grid"></div>
+      <button id="btn-enter" class="primary big-btn" disabled>进入标注</button>
+      <p id="start-hint" class="muted"></p>
+    </div>
+  </section>
+
+  <section id="screen-main" class="screen hidden">
+    <header id="topbar">
+      <div class="topbar-row1">
+        <span id="progress-text">-/-</span>
+        <span id="head-name" class="head-chip">-</span>
+        <span class="spacer"></span>
+        <button id="btn-head-help" class="icon-btn" aria-label="head 释义">?</button>
+        <button id="btn-meta" class="ghost-btn small">更多信息</button>
+      </div>
+      <div id="progress-bar"><div id="progress-fill"></div></div>
+    </header>
+
+    <div id="card">
+      <h3 id="card-title" class="card-title"></h3>
+      <div id="card-content"></div>
+      <p class="sample-id-line muted">sample_id: <span id="card-sample-id"></span></p>
+    </div>
+
+    <div id="question-bar">
+      <span id="question-text"></span>
+      <button id="btn-question-help" class="icon-btn" aria-label="问题释义">?</button>
+    </div>
+
+    <div id="labels"></div>
+
+    <footer id="navbar">
+      <button id="btn-prev" class="ghost-btn nav-btn">上一条</button>
+      <button id="btn-final" class="primary nav-btn hidden">完成本条</button>
+      <button id="btn-next" class="ghost-btn nav-btn">下一条</button>
+    </footer>
+  </section>
+
+  <div id="sheet-overlay" class="hidden"></div>
+  <div id="sheet" class="hidden" role="dialog" aria-modal="true">
+    <div class="sheet-handle"></div>
+    <div id="sheet-content"></div>
+    <button id="sheet-close" class="ghost-btn">关闭</button>
+  </div>
+
+  <div id="toast" class="hidden"></div>
+  <div id="sync-banner" class="hidden"></div>
+</div>
+<script src="/app.js"></script>
+</body>
+</html>
