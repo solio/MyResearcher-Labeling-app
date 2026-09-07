@@ -178,6 +178,8 @@ class Store:
             "updated_at": d["updated_at"],
             "schema_version": d["schema_version"],
             "glossary": self.head_glossary(d["head"]),
+            "invariants": self.glossary.get("invariants", []),
+            "dispositions": list(ALL_DISPOSITIONS),
         }
 
     # ---- writes ----

@@ -12,6 +12,7 @@ const HEADS = [
   { id: "reasoning_tags", name: "推理依据（多选）" },
 ];
 const TERMINAL_DISPOSITIONS = ["跳过", "无法判断", "缺少上下文"];
+const DISPOSITIONS = ["无法判断", "缺少上下文", "跳过", "稍后再看"];
 const SESSION_KEY = "mr_labeler_session_v1";
 
 const state = {
@@ -160,9 +161,72 @@ async function showAssignment(idx) {
   $("#card-sample-id").textContent = detail.sample.id;
   $("#question-text").textContent = detail.glossary ? detail.glossary.question : "";
   renderLabels(detail);
+  renderDispositions();
+  updateFinalBtn();
   renderProgress();
   $("#btn-prev").disabled = idx === 0;
   $("#btn-next").disabled = idx === state.assignments.length - 1;
+}
+
+function hasAnswer(a) {
+  return isMultiHead(state.session.head)
+    ? Array.isArray(a.answer) && a.answer.length > 0
+    : typeof a.answer === "string" && a.answer.length > 0;
+}
+
+function updateFinalBtn() {
+  const a = state.assignments[state.idx];
+  const show = a && !isDone(a) && hasAnswer(a);
+  $("#btn-final").classList.toggle("hidden", !show);
+}
+
+function renderDispositions() {
+  const wrap = $("#disposition-row");
+  wrap.innerHTML = "";
+  const a = state.assignments[state.idx];
+  for (const d of DISPOSITIONS) {
+    const btn = document.createElement("button");
+    btn.className = "disp-btn";
+    btn.textContent = d;
+    if (a.disposition === d) btn.classList.add("selected");
+    btn.addEventListener("click", () => onDispositionClick(d));
+    wrap.appendChild(btn);
+  }
+}
+
+function nextUnfinishedIndex(fromIdx) {
+  const n = state.assignments.length;
+  for (let i = fromIdx + 1; i < n; i++) if (!isDone(state.assignments[i])) return i;
+  for (let i = 0; i <= fromIdx && i < n; i++) if (!isDone(state.assignments[i])) return i;
+  return null;
+}
+
+async function finalizeCurrent() {
+  const a = state.assignments[state.idx];
+  if (!hasAnswer(a)) return;
+  const ok = await saveAnnotation({ answer: a.answer, disposition: a.disposition, is_final: true });
+  if (!ok) return;
+  toast("已完成本条");
+  const nxt = nextUnfinishedIndex(state.idx);
+  if (nxt === null) {
+    toast("本 head 全部完成");
+    updateFinalBtn();
+  } else {
+    showAssignment(nxt);
+  }
+}
+
+async function onDispositionClick(d) {
+  const a = state.assignments[state.idx];
+  const ok = await saveAnnotation({ answer: a.answer, disposition: d, is_final: false });
+  if (!ok) return;
+  if (d === "稍后再看") {
+    toast("已标记稍后再看");
+  } else {
+    toast(`已标记：${d}`);
+    const nxt = nextUnfinishedIndex(state.idx);
+    if (nxt !== null) showAssignment(nxt);
+  }
 }
 
 function renderLabels(detail) {
@@ -176,12 +240,17 @@ function renderLabels(detail) {
     btn.className = "label-btn";
     btn.dataset.label = label.id;
     btn.innerHTML =
-      `<span class="row"><span class="zh">${label.name_zh}</span></span>` +
+      `<span class="row"><span class="zh">${label.name_zh}</span>` +
+      `<i class="info-dot" data-info="${label.id}">ⓘ</i></span>` +
       `<span class="en">${label.id}</span>`;
     const selected = isMultiHead(head)
       ? Array.isArray(current) && current.includes(label.id)
       : current === label.id;
     if (selected) btn.classList.add("selected");
+    btn.querySelector(".info-dot").addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      showLabelSheet(detail, label);
+    });
     btn.addEventListener("click", () => onLabelClick(label.id));
     wrap.appendChild(btn);
   }
@@ -217,6 +286,8 @@ async function saveAnnotation(part) {
     a.updated_at = rec.updated_at;
     toast("已入库");
     renderLabels(await getDetail(a.id));
+    renderDispositions();
+    updateFinalBtn();
     renderProgress();
     return true;
   } catch (e) {
@@ -253,6 +324,62 @@ function showMetaSheet() {
   openSheet(html);
 }
 
+/* ---------- 释义 sheets ---------- */
+
+function currentDetail() {
+  const a = state.assignments[state.idx];
+  return a ? state.details.get(a.id) : null;
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+function showHeadSheet() {
+  const detail = currentDetail();
+  if (!detail || !detail.glossary) return;
+  const g = detail.glossary;
+  const items = (arr) => (arr || []).map((x) => `<p class="gloss-item">${esc(x)}</p>`).join("");
+  const html =
+    `<h3 class="sheet-title">${esc(headName(state.session.head))} <span class="muted">(${esc(state.session.head)})</span></h3>` +
+    `<p class="gloss-q">${esc(g.question)}</p>` +
+    `<p class="gloss-def">${esc(g.definition_zh || "")}</p>` +
+    (g.select_when ? `<p class="gloss-sec">✓ 该选</p>${items([g.select_when])}` : "") +
+    (g.not_select_when ? `<p class="gloss-sec">✗ 不该选</p>${items([g.not_select_when])}` : "") +
+    (g.positive_examples && g.positive_examples.length ? `<p class="gloss-sec">正例</p>${items(g.positive_examples)}` : "") +
+    (g.confusable && g.confusable.length ? `<p class="gloss-sec">易混淆</p>${items(g.confusable)}` : "");
+  openSheet(html);
+}
+
+function showLabelSheet(detail, label) {
+  const g = detail.glossary;
+  const html =
+    `<h3 class="sheet-title">${esc(label.name_zh)} <span class="muted">(${esc(label.id)})</span></h3>` +
+    `<p class="gloss-def">${esc(label.description)}</p>` +
+    (g.confusable && g.confusable.length
+      ? `<p class="gloss-sec">本 head 易混淆提示</p>` +
+        g.confusable.map((x) => `<p class="gloss-item">${esc(x)}</p>`).join("")
+      : "") +
+    (detail.invariants && detail.invariants.length
+      ? `<p class="gloss-sec">全局不变量</p><ul class="invariant-list">` +
+        detail.invariants.map((x) => `<li>${esc(x)}</li>`).join("") + "</ul>"
+      : "");
+  openSheet(html);
+}
+
+function showSwitchSheet() {
+  const html =
+    '<h3 class="sheet-title">切换 head？</h3>' +
+    '<p class="sheet-sub">Head Lock：一个会话锁定一个 head 连续标注。返回后当前进度保留，可另选 batch/head 重新进入。</p>';
+  openSheet(html +
+    '<button id="btn-switch-yes" class="ghost-btn" style="width:100%;height:44px;margin-top:8px;">返回选择页</button>');
+  $("#btn-switch-yes").addEventListener("click", () => {
+    closeSheet();
+    state.session = { batchId: state.session.batchId, head: null };
+    renderStart();
+  });
+}
+
 /* ---------- 启动 ---------- */
 
 function bindEvents() {
@@ -263,11 +390,13 @@ function bindEvents() {
   });
   $("#btn-prev").addEventListener("click", () => showAssignment(state.idx - 1));
   $("#btn-next").addEventListener("click", () => showAssignment(state.idx + 1));
+  $("#btn-final").addEventListener("click", finalizeCurrent);
   $("#btn-meta").addEventListener("click", showMetaSheet);
   $("#sheet-close").addEventListener("click", closeSheet);
   $("#sheet-overlay").addEventListener("click", closeSheet);
-  $("#btn-head-help").addEventListener("click", () => toast("释义功能即将上线"));
-  $("#btn-question-help").addEventListener("click", () => toast("释义功能即将上线"));
+  $("#btn-head-help").addEventListener("click", showHeadSheet);
+  $("#btn-question-help").addEventListener("click", showHeadSheet);
+  $("#btn-switch").addEventListener("click", showSwitchSheet);
 }
 
 async function init() {
