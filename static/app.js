@@ -1,6 +1,9 @@
 "use strict";
 
-/* MyResearcher 单人标注工具 — 前端（原生 JS，零依赖） */
+/* MyResearcher 单人标注工具 — 前端（原生 JS，零依赖）
+ * 保存链路：点击 → localStorage 重试队列 → POST /api/annotations → 已入库；
+ * 失败则"本机已保存·待同步 N 条"，网络恢复（online 事件 / 10s 定时 / 启动）自动重试。
+ */
 
 const HEADS = [
   { id: "target_mode", name: "目标对象" },
@@ -13,14 +16,21 @@ const HEADS = [
 ];
 const TERMINAL_DISPOSITIONS = ["跳过", "无法判断", "缺少上下文"];
 const DISPOSITIONS = ["无法判断", "缺少上下文", "跳过", "稍后再看"];
+
 const SESSION_KEY = "mr_labeler_session_v1";
+const QUEUE_KEY = "mr_queue_v1";
+const DETAILS_KEY = "mr_details_v1";
+const DETAILS_CAP = 200;
 
 const state = {
   session: null,       // { batchId, head }
   batches: [],
+  batchesError: null,
   assignments: [],
   idx: 0,
-  details: new Map(),  // assignment_id -> /api/assignment 响应
+  details: new Map(),  // assignment_id -> {sample, glossary, invariants}
+  syncFailToastShown: false,
+  retryTimer: null,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -58,14 +68,149 @@ function closeSheet() {
   $("#sheet-overlay").classList.add("hidden");
 }
 
+function lsGet(key, fallback) {
+  try { return JSON.parse(localStorage.getItem(key)) ?? fallback; }
+  catch (e) { return fallback; }
+}
+function lsSet(key, value) {
+  localStorage.setItem(key, JSON.stringify(value));
+}
+
+/* ---------- localStorage 重试队列 ---------- */
+
+function readQueue() {
+  const q = lsGet(QUEUE_KEY, []);
+  return Array.isArray(q) ? q : [];
+}
+
+function enqueueSave(assignmentId, st) {
+  const q = readQueue().filter((item) => item.assignment_id !== assignmentId);
+  q.push({
+    assignment_id: assignmentId,
+    queued_at: new Date().toISOString(),
+    payload: {
+      assignment_id: assignmentId,
+      answer: st.answer,
+      disposition: st.disposition,
+      is_final: !!st.is_final,
+    },
+  });
+  lsSet(QUEUE_KEY, q);
+  updateSyncBanner();
+}
+
+function dequeueSave(assignmentId) {
+  lsSet(QUEUE_KEY, readQueue().filter((item) => item.assignment_id !== assignmentId));
+}
+
+function updateSyncBanner() {
+  const n = readQueue().length;
+  const b = $("#sync-banner");
+  if (n > 0) {
+    b.textContent = `本机已保存 · 待同步 ${n} 条`;
+    b.classList.remove("hidden");
+  } else {
+    b.classList.add("hidden");
+  }
+}
+
+let flushBusy = false;
+async function flushQueue() {
+  if (flushBusy) return;
+  flushBusy = true;
+  try {
+    for (;;) {
+      const q = readQueue();
+      if (!q.length) break;
+      const item = q[0];
+      let rec;
+      try {
+        rec = await api("/api/annotations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(item.payload),
+        });
+      } catch (e) {
+        if (!state.syncFailToastShown) {
+          toast(`本机已保存 · 待同步 ${q.length} 条`, true);
+          state.syncFailToastShown = true;
+        }
+        clearTimeout(state.retryTimer);
+        state.retryTimer = setTimeout(flushQueue, 5000);
+        break;
+      }
+      dequeueSave(item.assignment_id);
+      state.syncFailToastShown = false;
+      const row = state.assignments.find((a) => a.id === item.assignment_id);
+      if (row) {
+        row.revision = rec.revision;
+        row.updated_at = rec.updated_at;
+        row.status = rec.is_final ? "completed" : row.status;
+      }
+      toast("已入库");
+    }
+  } finally {
+    flushBusy = false;
+  }
+  updateSyncBanner();
+}
+
+/* ---------- 本地缓存（列表 + 详情），用于离线恢复 ---------- */
+
+function listKey(batchId, head) {
+  return `mr_list_v1__${batchId}__${head}`;
+}
+function cacheList(batchId, head, rows) {
+  try { lsSet(listKey(batchId, head), rows); } catch (e) { /* 存储满则放弃 */ }
+}
+function cachedList(batchId, head) {
+  const rows = lsGet(listKey(batchId, head), null);
+  return Array.isArray(rows) ? rows : null;
+}
+
+function cachedDetail(assignmentId) {
+  const store = lsGet(DETAILS_KEY, {});
+  const d = store[assignmentId];
+  return d ? { sample: d.sample, glossary: d.glossary, invariants: d.invariants || [] } : null;
+}
+function persistDetail(assignmentId, detail) {
+  try {
+    const store = lsGet(DETAILS_KEY, {});
+    store[assignmentId] = {
+      sample: detail.sample,
+      glossary: detail.glossary,
+      invariants: detail.invariants || [],
+    };
+    const keys = Object.keys(store);
+    if (keys.length > DETAILS_CAP) {
+      for (const k of keys.slice(0, keys.length - DETAILS_CAP)) delete store[k];
+    }
+    lsSet(DETAILS_KEY, store);
+  } catch (e) { /* 存储满则放弃 */ }
+}
+
+/* 把未同步的队列 payload 合并进任务列表（断网/刷新后不丢已点击答案） */
+function mergePendingQueue(rows) {
+  const pending = {};
+  for (const item of readQueue()) pending[item.assignment_id] = item.payload;
+  return rows.map((r) => {
+    const p = pending[r.id];
+    if (!p) return r;
+    return Object.assign({}, r, {
+      answer: p.answer,
+      disposition: p.disposition,
+      is_final: p.is_final,
+    });
+  });
+}
+
 /* ---------- 会话 ---------- */
 
 function loadSession() {
-  try { return JSON.parse(localStorage.getItem(SESSION_KEY)) || null; }
-  catch (e) { return null; }
+  return lsGet(SESSION_KEY, null);
 }
 function saveSession() {
-  localStorage.setItem(SESSION_KEY, JSON.stringify(state.session));
+  lsSet(SESSION_KEY, state.session);
 }
 
 /* ---------- 开始屏 ---------- */
@@ -76,7 +221,9 @@ function renderStart() {
   const bl = $("#batch-list");
   bl.innerHTML = "";
   if (!state.batches.length) {
-    bl.innerHTML = '<p class="muted">暂无 batch：先用 tools/import_batch.py 或 tools/seed_demo.py 导入。</p>';
+    bl.innerHTML = state.batchesError
+      ? '<p class="muted">无法连接服务且没有本地会话：请启动 python3 server.py 后刷新。</p>'
+      : '<p class="muted">暂无 batch：先用 tools/import_batch.py 或 tools/seed_demo.py 导入。</p>';
   }
   for (const b of state.batches) {
     const btn = document.createElement("button");
@@ -112,24 +259,38 @@ function renderStart() {
 
 /* ---------- 主屏 ---------- */
 
-async function enterMain(batchId, head) {
+async function enterMain(batchId, head, jumpToId) {
   state.session = { batchId, head };
   saveSession();
+  let rows = null;
   try {
-    state.assignments = await api(`/api/assignments?batch_id=${encodeURIComponent(batchId)}&head=${encodeURIComponent(head)}`);
+    rows = await api(`/api/assignments?batch_id=${encodeURIComponent(batchId)}&head=${encodeURIComponent(head)}`);
+    cacheList(batchId, head, rows);
   } catch (e) {
-    toast("加载任务失败: " + e.message, true);
-    return;
+    rows = cachedList(batchId, head);
+    if (!rows) {
+      toast("无法加载任务且无本地缓存", true);
+      return false;
+    }
+    toast("离线：使用本地缓存");
   }
+  state.assignments = mergePendingQueue(rows);
   if (!state.assignments.length) {
     toast("该 batch/head 没有任何任务", true);
-    return;
+    return false;
   }
-  state.idx = firstUnfinishedIndex();
+  state.idx = 0;
+  if (jumpToId) {
+    const i = state.assignments.findIndex((a) => a.id === jumpToId);
+    if (i >= 0 && !isDone(state.assignments[i])) state.idx = i;
+  }
+  if (!jumpToId || state.idx === 0) state.idx = firstUnfinishedIndex();
   $("#screen-start").classList.add("hidden");
   $("#screen-main").classList.remove("hidden");
   $("#head-name").textContent = headName(head);
   await showAssignment(state.idx);
+  flushQueue();
+  return true;
 }
 
 function firstUnfinishedIndex() {
@@ -138,11 +299,17 @@ function firstUnfinishedIndex() {
 }
 
 async function getDetail(assignmentId) {
-  if (!state.details.has(assignmentId)) {
-    const d = await api(`/api/assignment?id=${encodeURIComponent(assignmentId)}`);
-    state.details.set(assignmentId, d);
+  if (state.details.has(assignmentId)) return state.details.get(assignmentId);
+  const local = cachedDetail(assignmentId);
+  if (local) {
+    state.details.set(assignmentId, local);
+    return local;
   }
-  return state.details.get(assignmentId);
+  const d = await api(`/api/assignment?id=${encodeURIComponent(assignmentId)}`);
+  const slim = { sample: d.sample, glossary: d.glossary, invariants: d.invariants || [] };
+  state.details.set(assignmentId, slim);
+  persistDetail(assignmentId, slim);
+  return slim;
 }
 
 async function showAssignment(idx) {
@@ -153,7 +320,11 @@ async function showAssignment(idx) {
   try {
     detail = await getDetail(a.id);
   } catch (e) {
-    toast("加载内容失败: " + e.message, true);
+    $("#card-title").textContent = a.title || "（无标题）";
+    $("#card-content").textContent = "（离线且无该条内容缓存）";
+    $("#card-sample-id").textContent = a.sample_id;
+    $("#question-text").textContent = "";
+    $("#labels").innerHTML = '<p class="muted">内容不可用：恢复网络后重试。</p>';
     return;
   }
   $("#card-title").textContent = detail.sample.title || "（无标题）";
@@ -166,67 +337,6 @@ async function showAssignment(idx) {
   renderProgress();
   $("#btn-prev").disabled = idx === 0;
   $("#btn-next").disabled = idx === state.assignments.length - 1;
-}
-
-function hasAnswer(a) {
-  return isMultiHead(state.session.head)
-    ? Array.isArray(a.answer) && a.answer.length > 0
-    : typeof a.answer === "string" && a.answer.length > 0;
-}
-
-function updateFinalBtn() {
-  const a = state.assignments[state.idx];
-  const show = a && !isDone(a) && hasAnswer(a);
-  $("#btn-final").classList.toggle("hidden", !show);
-}
-
-function renderDispositions() {
-  const wrap = $("#disposition-row");
-  wrap.innerHTML = "";
-  const a = state.assignments[state.idx];
-  for (const d of DISPOSITIONS) {
-    const btn = document.createElement("button");
-    btn.className = "disp-btn";
-    btn.textContent = d;
-    if (a.disposition === d) btn.classList.add("selected");
-    btn.addEventListener("click", () => onDispositionClick(d));
-    wrap.appendChild(btn);
-  }
-}
-
-function nextUnfinishedIndex(fromIdx) {
-  const n = state.assignments.length;
-  for (let i = fromIdx + 1; i < n; i++) if (!isDone(state.assignments[i])) return i;
-  for (let i = 0; i <= fromIdx && i < n; i++) if (!isDone(state.assignments[i])) return i;
-  return null;
-}
-
-async function finalizeCurrent() {
-  const a = state.assignments[state.idx];
-  if (!hasAnswer(a)) return;
-  const ok = await saveAnnotation({ answer: a.answer, disposition: a.disposition, is_final: true });
-  if (!ok) return;
-  toast("已完成本条");
-  const nxt = nextUnfinishedIndex(state.idx);
-  if (nxt === null) {
-    toast("本 head 全部完成");
-    updateFinalBtn();
-  } else {
-    showAssignment(nxt);
-  }
-}
-
-async function onDispositionClick(d) {
-  const a = state.assignments[state.idx];
-  const ok = await saveAnnotation({ answer: a.answer, disposition: d, is_final: false });
-  if (!ok) return;
-  if (d === "稍后再看") {
-    toast("已标记稍后再看");
-  } else {
-    toast(`已标记：${d}`);
-    const nxt = nextUnfinishedIndex(state.idx);
-    if (nxt !== null) showAssignment(nxt);
-  }
 }
 
 function renderLabels(detail) {
@@ -270,30 +380,78 @@ function onLabelClick(labelId) {
   saveAnnotation({ answer, disposition: a.disposition, is_final: false });
 }
 
-async function saveAnnotation(part) {
+function hasAnswer(a) {
+  return isMultiHead(state.session.head)
+    ? Array.isArray(a.answer) && a.answer.length > 0
+    : typeof a.answer === "string" && a.answer.length > 0;
+}
+
+function updateFinalBtn() {
   const a = state.assignments[state.idx];
-  const payload = Object.assign({ assignment_id: a.id }, part);
-  try {
-    const rec = await api("/api/annotations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    a.answer = rec.answer;
-    a.disposition = rec.disposition;
-    a.is_final = rec.is_final;
-    a.revision = rec.revision;
-    a.updated_at = rec.updated_at;
-    toast("已入库");
-    renderLabels(await getDetail(a.id));
-    renderDispositions();
-    updateFinalBtn();
-    renderProgress();
-    return true;
-  } catch (e) {
-    toast("保存失败: " + e.message, true);
-    return false;
+  const show = a && !isDone(a) && hasAnswer(a);
+  $("#btn-final").classList.toggle("hidden", !show);
+}
+
+function renderDispositions() {
+  const wrap = $("#disposition-row");
+  wrap.innerHTML = "";
+  const a = state.assignments[state.idx];
+  for (const d of DISPOSITIONS) {
+    const btn = document.createElement("button");
+    btn.className = "disp-btn";
+    btn.textContent = d;
+    if (a.disposition === d) btn.classList.add("selected");
+    btn.addEventListener("click", () => onDispositionClick(d));
+    wrap.appendChild(btn);
   }
+}
+
+function nextUnfinishedIndex(fromIdx) {
+  const n = state.assignments.length;
+  for (let i = fromIdx + 1; i < n; i++) if (!isDone(state.assignments[i])) return i;
+  for (let i = 0; i <= fromIdx && i < n; i++) if (!isDone(state.assignments[i])) return i;
+  return null;
+}
+
+function finalizeCurrent() {
+  const a = state.assignments[state.idx];
+  if (!hasAnswer(a)) return;
+  saveAnnotation({ answer: a.answer, disposition: a.disposition, is_final: true });
+  toast("已完成本条");
+  const nxt = nextUnfinishedIndex(state.idx);
+  if (nxt === null) {
+    toast("本 head 全部完成");
+    updateFinalBtn();
+  } else {
+    showAssignment(nxt);
+  }
+}
+
+function onDispositionClick(d) {
+  const a = state.assignments[state.idx];
+  saveAnnotation({ answer: a.answer, disposition: d, is_final: false });
+  if (d === "稍后再看") {
+    toast("已标记稍后再看");
+  } else {
+    toast(`已标记：${d}`);
+    const nxt = nextUnfinishedIndex(state.idx);
+    if (nxt !== null) showAssignment(nxt);
+  }
+}
+
+/* 保存链路：先落 localStorage 队列，再尝试 POST（幂等 upsert） */
+function saveAnnotation(st) {
+  const a = state.assignments[state.idx];
+  a.answer = st.answer;
+  a.disposition = st.disposition;
+  a.is_final = st.is_final;
+  enqueueSave(a.id, st);
+  const detail = state.details.get(a.id);
+  if (detail) renderLabels(detail);
+  renderDispositions();
+  updateFinalBtn();
+  renderProgress();
+  flushQueue();
 }
 
 function renderProgress() {
@@ -305,9 +463,13 @@ function renderProgress() {
 
 /* ---------- 元数据 sheet ---------- */
 
-function showMetaSheet() {
+function currentDetail() {
   const a = state.assignments[state.idx];
-  const detail = state.details.get(a.id);
+  return a ? state.details.get(a.id) : null;
+}
+
+function showMetaSheet() {
+  const detail = currentDetail();
   if (!detail) return;
   const m = detail.sample.metadata || {};
   const rows = [
@@ -325,11 +487,6 @@ function showMetaSheet() {
 }
 
 /* ---------- 释义 sheets ---------- */
-
-function currentDetail() {
-  const a = state.assignments[state.idx];
-  return a ? state.details.get(a.id) : null;
-}
 
 function esc(s) {
   return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -370,9 +527,9 @@ function showLabelSheet(detail, label) {
 function showSwitchSheet() {
   const html =
     '<h3 class="sheet-title">切换 head？</h3>' +
-    '<p class="sheet-sub">Head Lock：一个会话锁定一个 head 连续标注。返回后当前进度保留，可另选 batch/head 重新进入。</p>';
-  openSheet(html +
-    '<button id="btn-switch-yes" class="ghost-btn" style="width:100%;height:44px;margin-top:8px;">返回选择页</button>');
+    '<p class="sheet-sub">Head Lock：一个会话锁定一个 head 连续标注。返回后当前进度保留，可另选 batch/head 重新进入。</p>' +
+    '<button id="btn-switch-yes" class="ghost-btn" style="width:100%;height:44px;margin-top:8px;">返回选择页</button>';
+  openSheet(html);
   $("#btn-switch-yes").addEventListener("click", () => {
     closeSheet();
     state.session = { batchId: state.session.batchId, head: null };
@@ -380,7 +537,7 @@ function showSwitchSheet() {
   });
 }
 
-/* ---------- 启动 ---------- */
+/* ---------- 启动 / resume ---------- */
 
 function bindEvents() {
   $("#btn-enter").addEventListener("click", () => {
@@ -397,6 +554,7 @@ function bindEvents() {
   $("#btn-head-help").addEventListener("click", showHeadSheet);
   $("#btn-question-help").addEventListener("click", showHeadSheet);
   $("#btn-switch").addEventListener("click", showSwitchSheet);
+  window.addEventListener("online", () => flushQueue());
 }
 
 async function init() {
@@ -404,15 +562,40 @@ async function init() {
   try {
     state.batches = await api("/api/batches");
   } catch (e) {
-    $("#start-hint").textContent = "无法连接服务: " + e.message + "（请确认 python3 server.py 已启动）";
-    return;
+    state.batches = [];
+    state.batchesError = e.message;
   }
+
+  // 恢复路径：/api/resume（服务端最近未完成） + localStorage 会话/队列/缓存
+  let target = null;
   const saved = loadSession();
-  if (saved && saved.batchId && saved.head && state.batches.some((b) => b.id === saved.batchId)) {
-    await enterMain(saved.batchId, saved.head);
-    return;
+  if (saved && saved.batchId && saved.head) {
+    target = { batchId: saved.batchId, head: saved.head, jumpToId: null };
+  }
+  try {
+    const resume = await api("/api/resume");
+    if (resume && resume.assignment_id) {
+      const d = await api(`/api/assignment?id=${encodeURIComponent(resume.assignment_id)}`);
+      const rid = d.assignment.id;
+      const rbatch = d.assignment.batch_id;
+      const rhead = d.assignment.head;
+      if (target && target.batchId === rbatch && target.head === rhead) {
+        target.jumpToId = rid;
+      } else {
+        target = { batchId: rbatch, head: rhead, jumpToId: rid };
+      }
+    }
+  } catch (e) { /* 离线：完全走本地 */ }
+
+  if (target && target.batchId && target.head) {
+    const ok = await enterMain(target.batchId, target.head, target.jumpToId);
+    if (ok) return;
   }
   renderStart();
 }
+
+setInterval(() => {
+  if (readQueue().length) flushQueue();
+}, 10000);
 
 init();
