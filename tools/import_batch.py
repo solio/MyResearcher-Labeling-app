@@ -67,6 +67,11 @@ def parse_samples(path):
 
 
 def import_samples(db_path, batch_id, samples, heads, schema_version):
+    glossary = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    head_order = glossary.get("head_order", [])
+    unknown = [h for h in heads if h not in head_order]
+    if unknown:
+        fail(f"未知 head: {unknown}（可用: {head_order}）")
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(str(db_path))
