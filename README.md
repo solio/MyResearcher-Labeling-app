@@ -41,17 +41,17 @@ mysql 模式下表建在配置指定的库中（utf8mb4），jsonl 流水仍写�
 
 ## GPT 加任务 / 拉结果（gpt_tasks）
 
-面向"本地专家（GPT）加任务 → 服务端网页标注 → 本地专家拉结果"的闭环，
-读写与服务端同一份配置：
+面向"本机 GPT 加任务 → 服务端网页标注 → 本机拉结果"的闭环。两份配置指向**同一个 MySQL**：
+服务端 `config.json` 用内网 host，本机 `data/config-gpt.json` 用公网 host（已配置好、已实测通）。
 
 ```bash
-# 加任务（与 import_batch 同一套 samples.jsonl 契约，fail-closed）
+# 加任务（本机执行；与 import_batch 同一套 samples.jsonl 契约，fail-closed）
 python3 tools/gpt_tasks.py add --batch mybatch --file samples.jsonl \
-  --heads target_mode,stance --config config.json
+  --heads target_mode,stance --config data/config-gpt.json
 
 # 拉结果（jsonl 默认打印 stdout；--out 写文件；csv 同 export 列）
-python3 tools/gpt_tasks.py pull --config config.json
-python3 tools/gpt_tasks.py pull --final-only --batch mybatch --format csv --out gold.csv --config config.json
+python3 tools/gpt_tasks.py pull --config data/config-gpt.json
+python3 tools/gpt_tasks.py pull --final-only --batch mybatch --format csv --out gold.csv --config data/config-gpt.json
 ```
 
 退出码：0 成功；1 数据/校验失败（不写库）；2 配置错误。
@@ -84,45 +84,48 @@ python3 tools/import_batch.py --batch mybatch --file samples.jsonl \
 
 ## 部署到服务端
 
-### 方案 A：git clone + docker compose（MySQL 用已有实例，推荐）
+> 当前状态（2026-09-08）：labeler 镜像已推私有仓库（amd64）；本机 GPT 侧 add/pull
+> 已对真实库实测通；服务端首次部署与 nginx 挂载待执行/待验证。
 
-labeler 镜像已预构建为 amd64 并推送到私有仓库，**服务器只 pull：不 build、不依赖
-Docker Hub**（服务器拉不到 Hub 也没关系）。compose 只含 labeler 一个服务，
-MySQL 由使用方自备（服务器上已有实例即可）。
+### 方案 A：docker compose + 已有 MySQL（当前实际部署，推荐）
 
-前提：MySQL 里建库建号（setup_deploy.py 运行时会再打印一遍这段 SQL）：
+环境：阿里云服务器，公网 `8.148.251.114`、内网 `172.21.153.219`。MySQL 用服务端
+**已有实例**的 `fzz-config` 库与同名账号——无需建库建号，labeler 首次启动自动建
+4 张表（batches/samples/assignments/annotations）。labeler 镜像已预构建为 amd64 并
+推送到私有仓库，**服务器只 pull：不 build、不依赖 Docker Hub**。
 
-```sql
-CREATE DATABASE IF NOT EXISTS myresearcher_labeler DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER IF NOT EXISTS 'labeler'@'%' IDENTIFIED BY '强密码';
-GRANT ALL PRIVILEGES ON myresearcher_labeler.* TO 'labeler'@'%';
-```
+服务器上首次部署（照抄，`<MySQL密码>` 换成 fzz-config 的真实密码）：
 
 ```bash
 # ① 一次性：登录私有镜像仓库
 docker login --username='xiazhidao@1726161629823217' \
   fangzuzu-docker-registry-vpc.cn-guangzhou.cr.aliyuncs.com
 
-# ② 服务器上 clone + 一键配置（生成 config.json 指向已有 MySQL；已存在时拒绝覆盖）
+# ② clone + 一键生成 config.json（storage=mysql；已存在时拒绝覆盖，先删旧的）
 git clone <你的仓库地址> MyResearcher-Labeling-app
 cd MyResearcher-Labeling-app
-python3 tools/setup_deploy.py --mysql-password '强密码' --gpt-host <服务器公网IP>
-#   MySQL 不在宿主机/端口不同时：--mysql-host <内网IP> --mysql-port <端口>
+python3 tools/setup_deploy.py \
+  --mysql-host 172.21.153.219 --mysql-user fzz-config --mysql-db fzz-config \
+  --mysql-password '<MySQL密码>' \
+  --gpt-host 8.148.251.114
 
-# ③ 启动（labeler 只绑 127.0.0.1:8787，交给已有 nginx 反代，见下节）
+# ③ 启动并验证（labeler 只绑 127.0.0.1:8787，交给已有 nginx 反代，见下节）
 docker compose up -d
-curl http://127.0.0.1:8787/api/batches   # → [] 即成功
+curl http://127.0.0.1:8787/api/batches   # 应能看到 "selftest-gpt-link"（链路自检批次）
 ```
 
-- `mysql.host` 填「容器能到达」的地址：MySQL 在宿主机 → 默认 `host.docker.internal`
-  （compose 已配 host-gateway；要求 MySQL 不是只监听 127.0.0.1）；其他主机/容器 → 内网 IP。
-- ② 会打印一份「本地 GPT 机器」配置，存为本机 `config-gpt.json`，用 `gpt_tasks.py`
-  远程读写（在安全组放行 MySQL 对外端口）。
+- **服务端 `mysql.host` 必须填内网 `172.21.153.219`**（容器到宿主机内网 IP 可路由），
+  不要用默认的 `host.docker.internal`——该 MySQL 不一定监听 docker 网关地址。
+- `--gpt-host 8.148.251.114`：setup_deploy.py 会打印一份**本机 GPT** 配置（host=公网
+  IP）。本机这份已配置为 `data/config-gpt.json`（gitignored），公网 3306 已放行并实测
+  add/pull 双向通，日常用法见「GPT 加任务 / 拉结果」。
+- 通用口径（换其他 MySQL 时）：`--mysql-host` 按容器可达地址填；MySQL 只监听
+  127.0.0.1 时容器连不上，需改监听地址或填可达内网 IP。
 - 审计流水落在宿主机 `./data/annotations.jsonl`；标注数据在 MySQL 里。
 - **更新镜像**（本机做，改了代码之后）：
   ```bash
   docker buildx build --platform linux/amd64 \
-    -t fangzuzu-docker-registry.cn-guangzhou.cr.aliyuncs.com/fangzuzu/labeler:v1 . 
+    -t fangzuzu-docker-registry.cn-guangzhou.cr.aliyuncs.com/fangzuzu/labeler:v1 .
   docker push fangzuzu-docker-registry.cn-guangzhou.cr.aliyuncs.com/fangzuzu/labeler:v1
   ```
   服务器侧：`git pull && docker compose pull && docker compose up -d`。
