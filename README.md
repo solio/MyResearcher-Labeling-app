@@ -82,6 +82,25 @@ python3 tools/import_batch.py --batch mybatch --file samples.jsonl \
    - Android Chrome：菜单 → 添加到主屏幕 / 安装应用。
 4. 标注时全程使用会话锁定的 head；断网点击会进本机队列，网络恢复自动同步（页面需保持打开）。
 
+## 部署到服务端（无镜像、无构建）
+
+项目是纯 Python 源码 + 原生 JS，**部署 = 拷文件**：没有编译产物、不需要 Docker 镜像，
+本机 arm64 与 x86_64 服务器架构无关（PyMySQL 为纯 Python 驱动，同样无架构问题）。
+服务器唯一要求：`python3 ≥3.8`（mysql 模式另装 `pip3 install --user pymysql`）。
+
+```bash
+./deploy.sh --host user@server --path /srv/myresearcher-labeler \
+            --push-config --install-deps     # 首次部署；日常更新去掉这两个参数
+```
+
+脚本行为：rsync 同步代码（**排除 data/、config.json、日志**）→ 远端无 config.json 才上传
+（绝不覆盖远端已有配置）→ 校验远端 python3/config.json/pymysql → 打印启动方式。
+开机自启用 `deploy/labeler.service`（systemd 模板，改 WorkingDirectory/User/端口）。
+
+配置文件两端共用同一份即可，注意 `mysql.host` 要两端各自可达：
+推荐 MySQL 容器发布在服务器 `13306` 端口、两端配置都写服务器公网 IP（安全组放行 13306）；
+若服务器侧只想走内网，可把该端配置的 host 改为 `127.0.0.1`，仅这一项允许不同。
+
 ## 导出
 
 ```bash

@@ -63,6 +63,8 @@ schema/annotation-schema.v1.json  owner 可编辑释义：head 问题句/定义/
 tools/import_batch.py         导入 samples.jsonl（fail-closed；委托 SqliteStore，保留 --db 旧用法）
 tools/export_annotations.py   导出 jsonl/csv（--final-only；委托 SqliteStore，保留 --db 旧用法）
 tools/gpt_tasks.py            GPT 专用：add 加任务 / pull 拉结果（--config，sqlite/mysql 通用）
+deploy.sh                     部署到服务端：rsync 纯文件同步（排除凭据/数据），无镜像无构建
+deploy/labeler.service        systemd 单元模板（服务器开机自启/崩溃重启）
 tools/seed_demo.py            20 条虚构文本 demo
 tests/test_server.py          stdlib unittest ×15（HTTP/存储行为，后端无关）
 tests/test_config_and_tools.py  配置校验 ×9 + gpt_tasks 子进程往返 ×4 + MySQL opt-in ×2

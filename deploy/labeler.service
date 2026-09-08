@@ -1,0 +1,18 @@
+# systemd 单元模板：复制到服务器 /etc/systemd/system/ 后修改
+# WorkingDirectory / User / 端口，然后：
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now myresearcher-labeler
+[Unit]
+Description=MyResearcher Labeler (single-annotator web tool)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/srv/myresearcher-labeler
+ExecStart=/usr/bin/env python3 server.py --config config.json --port 8787
+Restart=always
+RestartSec=5
+User=YOUR_USER
+
+[Install]
+WantedBy=multi-user.target
