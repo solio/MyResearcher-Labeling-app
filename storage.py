@@ -546,7 +546,9 @@ class MysqlStore(BaseStore):
             password=mysql_cfg["password"],
             database=mysql_cfg["database"],
             charset=mysql_cfg.get("charset", "utf8mb4"),
-            autocommit=False,
+            # 必须开 autocommit：单条长连接下 REPEATABLE READ 的读事务若不结束，
+            # 之后所有读都冻结在旧快照里，看不到其他进程（GPT/导入）刚提交的数据。
+            autocommit=True,
             connect_timeout=mysql_cfg.get("connect_timeout", 10),
             cursorclass=pymysql.cursors.DictCursor,
         )
@@ -669,6 +671,7 @@ class MysqlStore(BaseStore):
             self._ping()
             cur = self.conn.cursor()
             try:
+                cur.execute("START TRANSACTION")
                 cur.execute(
                     "SELECT id, batch_id, sample_id, head FROM assignments WHERE id = %s",
                     (assignment_id,),
@@ -734,6 +737,7 @@ class MysqlStore(BaseStore):
             self._ping()
             cur = self.conn.cursor()
             try:
+                cur.execute("START TRANSACTION")
                 cur.execute("SELECT id FROM samples WHERE batch_id = %s", (batch_id,))
                 existing = {r["id"] for r in cur.fetchall()}
                 dup = existing & {s["sample_id"] for s in samples}

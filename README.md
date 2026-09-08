@@ -84,32 +84,48 @@ python3 tools/import_batch.py --batch mybatch --file samples.jsonl \
 
 ## 部署到服务端
 
-### 方案 A：git clone + docker compose（推荐，自带 MySQL）
+### 方案 A：git clone + docker compose（MySQL 用已有实例，推荐）
 
-compose 里 labeler 用 `build: .` 在**服务器上构建镜像**，没有本机导出镜像/芯片架构问题
-（纯 Python + 原生 JS，构建秒级）。服务器要求：git、Docker + compose 插件。
+labeler 镜像已预构建为 amd64 并推送到私有仓库，**服务器只 pull：不 build、不依赖
+Docker Hub**（服务器拉不到 Hub 也没关系）。compose 只含 labeler 一个服务，
+MySQL 由使用方自备（服务器上已有实例即可）。
 
-```bash
-# ① 服务器上 clone 代码
-git clone <你的仓库地址> MyResearcher-Labeling-app
-cd MyResearcher-Labeling-app
+前提：MySQL 里建库建号（setup_deploy.py 运行时会再打印一遍这段 SQL）：
 
-# ② 一次性生成配置（随机密码写入 .env + config.json，并打印本地 GPT 用的配置）
-python3 tools/setup_deploy.py --gpt-host <服务器公网IP>
-
-# ③ 启动（自带 MySQL，healthcheck 通过后 labeler 才启动）
-docker compose up -d --build
-
-# ④ 验证
-curl http://127.0.0.1:8787/api/batches   # → []
+```sql
+CREATE DATABASE IF NOT EXISTS myresearcher_labeler DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS 'labeler'@'%' IDENTIFIED BY '强密码';
+GRANT ALL PRIVILEGES ON myresearcher_labeler.* TO 'labeler'@'%';
 ```
 
-- ② 生成的 `.env`/`config.json` 已 gitignore、权限 600；已有文件时拒绝覆盖（EXIT=2）。
-- ② 会打印一份「本地 GPT 机器」配置，存为本地 `config-gpt.json`，用 `gpt_tasks.py` 经 13306
-  远程读写（安全组放行 13306）。
-- labeler 只绑 `127.0.0.1:8787`，交给已有 nginx 反代（见下节）。
-- 数据持久化：标注数据在 docker volume `mysql-data`；审计流水在宿主机 `./data/annotations.jsonl`。
-- 日常更新：`git pull && docker compose up -d --build`。
+```bash
+# ① 一次性：登录私有镜像仓库
+docker login --username='xiazhidao@1726161629823217' \
+  fangzuzu-docker-registry-vpc.cn-guangzhou.cr.aliyuncs.com
+
+# ② 服务器上 clone + 一键配置（生成 config.json 指向已有 MySQL；已存在时拒绝覆盖）
+git clone <你的仓库地址> MyResearcher-Labeling-app
+cd MyResearcher-Labeling-app
+python3 tools/setup_deploy.py --mysql-password '强密码' --gpt-host <服务器公网IP>
+#   MySQL 不在宿主机/端口不同时：--mysql-host <内网IP> --mysql-port <端口>
+
+# ③ 启动（labeler 只绑 127.0.0.1:8787，交给已有 nginx 反代，见下节）
+docker compose up -d
+curl http://127.0.0.1:8787/api/batches   # → [] 即成功
+```
+
+- `mysql.host` 填「容器能到达」的地址：MySQL 在宿主机 → 默认 `host.docker.internal`
+  （compose 已配 host-gateway；要求 MySQL 不是只监听 127.0.0.1）；其他主机/容器 → 内网 IP。
+- ② 会打印一份「本地 GPT 机器」配置，存为本机 `config-gpt.json`，用 `gpt_tasks.py`
+  远程读写（在安全组放行 MySQL 对外端口）。
+- 审计流水落在宿主机 `./data/annotations.jsonl`；标注数据在 MySQL 里。
+- **更新镜像**（本机做，改了代码之后）：
+  ```bash
+  docker buildx build --platform linux/amd64 \
+    -t fangzuzu-docker-registry.cn-guangzhou.cr.aliyuncs.com/fangzuzu/labeler:v1 . 
+  docker push fangzuzu-docker-registry.cn-guangzhou.cr.aliyuncs.com/fangzuzu/labeler:v1
+  ```
+  服务器侧：`git pull && docker compose pull && docker compose up -d`。
 
 ### 方案 B：无 Docker（python3 直接跑）
 

@@ -54,7 +54,11 @@
 | P6d | `python3 tools/setup_deploy.py --gpt-host 203.0.113.10` | EXIT=0；生成 .env + config.json（随机密码两份一致、chmod 600）并打印 GPT 端配置；再跑一次 EXIT=2（拒绝覆盖） |
 | P6d | 生成物 `load_config('config.json')` + `docker compose up -d --build` + `curl /api/batches` + `down -v` | 严格校验通过；双容器 healthy、API 返回 `[]`；随后清理（镜像缓存保留） |
 | P6d | `git rm deploy.sh`（rsync 同步方案废除：代码经 git clone 分发） | deploy.sh/.dockerignore/README/HANDOFF 同步更新 |
-| git | 每 phase commit | `131d5ee` phase1, `10ae9f1` phase2, `f34770e` phase3, `71003a6` phase4, `7ad7518` phase5, `00d61c3` docs, `7bc6978` phase6, `4071b78` deploy.sh, `d7f778f` subpath, `2978808` compose |
+| P6e | 用户拍板 MySQL 用服务端已有实例：compose 精简为仅 labeler，删 mysql 服务/13306/.env；`setup_deploy.py` 重写为生成指向已有 MySQL 的 config.json | E2E 拓扑=本机 mysql 容器当"宿主机 MySQL"（13306），labeler 容器经 `host.docker.internal` 连接 |
+| P6e | labeler 镜像 `docker buildx build --platform linux/amd64` → 推 `fangzuzu-…cr.aliyuncs.com/fangzuzu/labeler:v1` | registry 端 imagetools inspect 确认 **linux/amd64**（附带 unknown/unknown attestation，拉取自动忽略）；服务器不 build、不依赖 Docker Hub |
+| P6e | E2E 发现真 bug：GPT `add` 提交后容器侧 POST 立即 404"assignment 不存在"，片刻后又可见 | 根因：MysqlStore `autocommit=False` + 单条长连接，纯读请求不结束事务，REPEATABLE READ 快照冻结在首次读之前；此前 phase6 E2E 顺序侥幸未触发 |
+| P6e | 修复：连接改 `autocommit=True`（读永远新快照），`import_samples`/`upsert_annotation` 显式 `START TRANSACTION` 保 fail-closed 原子性 | **Ran 32 tests … OK**（含 MySQL opt-in ×2，EXIT=0）；E2E 重验「容器先读→GPT add→立即 POST→pull」：POST ok=True revision=1，pull 拉回 final 行 |
+| git | 每 phase commit | `131d5ee` phase1, `10ae9f1` phase2, `f34770e` phase3, `71003a6` phase4, `7ad7518` phase5, `00d61c3` docs, `7bc6978` phase6, `4071b78` deploy.sh, `d7f778f` subpath, `2978808` compose, `0e62024` setup_deploy |
 
 ## 3. 文件清单
 
@@ -72,13 +76,12 @@ schema/annotation-schema.v1.json  owner 可编辑释义：head 问题句/定义/
 tools/import_batch.py         导入 samples.jsonl（fail-closed；委托 SqliteStore，保留 --db 旧用法）
 tools/export_annotations.py   导出 jsonl/csv（--final-only；委托 SqliteStore，保留 --db 旧用法）
 tools/gpt_tasks.py            GPT 专用：add 加任务 / pull 拉结果（--config，sqlite/mysql 通用）
-tools/setup_deploy.py         服务器部署一次性设置：生成 .env + config.json（随机密码、chmod 600、拒绝覆盖），打印本地 GPT 端配置
+tools/setup_deploy.py         服务器部署一次性设置：生成 config.json（指向自备 MySQL，--mysql-password 必填、chmod 600、拒绝覆盖、过 load_config 校验），打印建库 SQL 与本地 GPT 端配置
 deploy/labeler.service        systemd 单元模板（服务器开机自启/崩溃重启；无 Docker 场景）
-Dockerfile                    python:3.12-slim + pymysql，PYTHONUNBUFFERED=1，CMD server.py --config config.json
+Dockerfile                    python:3.12-slim + pymysql，PYTHONUNBUFFERED=1；本机 buildx --platform linux/amd64 构建后推私有仓库，服务器只 pull
 requirements.txt              仅 pymysql>=1.1（镜像构建用）
 .dockerignore                 构建上下文排除 .git/data/config.json/.env/tests/文档
-docker-compose.yml            mysql:8.0（healthcheck、volume mysql-data、发布 13306）+ labeler（build: .，回环 8787，挂 config.json/data）
-.env.example                  compose 凭据模板（MYSQL_PASSWORD 须与 config.json 一致；.env 已 gitignore）
+docker-compose.yml            仅 labeler 服务：私有仓库 labeler:v1 镜像、回环 8787 给 nginx、extra_hosts host-gateway（容器连宿主机 MySQL）、挂 config.json/data；MySQL 由使用方自备实例
 tools/seed_demo.py            20 条虚构文本 demo
 tests/test_server.py          stdlib unittest ×15（HTTP/存储行为，后端无关）
 tests/test_config_and_tools.py  配置校验 ×9 + gpt_tasks 子进程往返 ×4 + MySQL opt-in ×2
@@ -153,8 +156,9 @@ data/annotations.jsonl        每次保存 append 一行（gitignore）
    `ping(reconnect=True)` 自愈；多进程同时写依赖 MySQL 事务，无跨进程优先级仲裁。
 10. `config.json` 相对路径按**配置文件所在目录**解析；复制配置到其他机器时需保持目录结构
     （或改绝对路径）。凭据明文存于 config.json——已 gitignore，但不得随仓库/截图外传。
-11. compose 版 labeler 只绑 `127.0.0.1:8787`（设计如此，需已有 nginx 反代对外）；MySQL `13306`
-    若映射公网需安全组放行并保证密码强度；HEAD 释义改动需 `docker compose up -d --build`（重建镜像）。
+11. compose 版仅 labeler 服务（镜像经私有仓库分发，服务器不 build）：MySQL 由使用方自备实例，
+    `config.json` 指向。若 MySQL 只监听 127.0.0.1，容器经 `host.docker.internal`（host-gateway）
+    连不上——需 MySQL 监听内网地址，或 config 填可达内网 IP。本机 GPT（gpt_tasks）直连 MySQL 对外端口。
 
 ## 8. 开放集成问题（待 owner 拍板）
 

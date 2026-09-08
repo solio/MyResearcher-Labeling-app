@@ -1,33 +1,13 @@
 services:
-  mysql:
-    image: mysql:8.0
-    restart: unless-stopped
-    environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-myresearcher_labeler}
-      MYSQL_USER: ${MYSQL_USER:-labeler}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
-    ports:
-      - "13306:3306"          # 供本地 GPT（gpt_tasks.py）远程读写；公网需放行安全组
-    volumes:
-      - mysql-data:/var/lib/mysql
-    healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD"]
-      interval: 5s
-      timeout: 5s
-      retries: 30
-
   labeler:
-    build: .                   # 在服务器上构建镜像，无本机导出/架构问题
+    # 预构建 amd64 镜像（本机 buildx 构建+推送私有仓库；服务器只 pull，不 build、不依赖 Docker Hub）
+    # 更新镜像：docker buildx build --platform linux/amd64 -t fangzuzu-docker-registry.cn-guangzhou.cr.aliyuncs.com/fangzuzu/labeler:v1 . && docker push <同串>
+    image: fangzuzu-docker-registry-vpc.cn-guangzhou.cr.aliyuncs.com/fangzuzu/labeler:v1
     restart: unless-stopped
-    depends_on:
-      mysql:
-        condition: service_healthy
     ports:
-      - "127.0.0.1:8787:8787"  # 只绑本机回环，交给已有 nginx 反代，不直接暴露公网
+      - "127.0.0.1:8787:8787"   # 只绑本机回环，交给已有 nginx 反代
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # 让容器内可连宿主机上的 MySQL（config.json 里 host 填它）
     volumes:
-      - ./config.json:/app/config.json:ro   # 服务端视角配置（mysql.host=mysql, port=3306）
-      - ./data:/app/data                    # jsonl 审计流水（mysql 模式下无 db 文件）
-
-volumes:
-  mysql-data:
+      - ./config.json:/app/config.json:ro   # mysql.host 指向已有实例：宿主机→host.docker.internal；容器/别的主机→内网 IP
+      - ./data:/app/data                    # jsonl 审计流水落宿主机
