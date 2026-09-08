@@ -58,7 +58,10 @@
 | P6e | labeler 镜像 `docker buildx build --platform linux/amd64` → 推 `fangzuzu-…cr.aliyuncs.com/fangzuzu/labeler:v1` | registry 端 imagetools inspect 确认 **linux/amd64**（附带 unknown/unknown attestation，拉取自动忽略）；服务器不 build、不依赖 Docker Hub |
 | P6e | E2E 发现真 bug：GPT `add` 提交后容器侧 POST 立即 404"assignment 不存在"，片刻后又可见 | 根因：MysqlStore `autocommit=False` + 单条长连接，纯读请求不结束事务，REPEATABLE READ 快照冻结在首次读之前；此前 phase6 E2E 顺序侥幸未触发 |
 | P6e | 修复：连接改 `autocommit=True`（读永远新快照），`import_samples`/`upsert_annotation` 显式 `START TRANSACTION` 保 fail-closed 原子性 | **Ran 32 tests … OK**（含 MySQL opt-in ×2，EXIT=0）；E2E 重验「容器先读→GPT add→立即 POST→pull」：POST ok=True revision=1，pull 拉回 final 行 |
-| git | 每 phase commit | `131d5ee` phase1, `10ae9f1` phase2, `f34770e` phase3, `71003a6` phase4, `7ad7518` phase5, `00d61c3` docs, `7bc6978` phase6, `4071b78` deploy.sh, `d7f778f` subpath, `2978808` compose, `0e62024` setup_deploy |
+| P7 | 上线（2026-09-08）：服务器 git clone + setup_deploy.py（`--mysql-host 172.21.153.219`，fzz-config 库）+ compose up | `https://testapi.zuzurent.com.cn/labeler/` 全链路通（nginx 子路径反代→容器→fzz-config MySQL）；本机 gpt_tasks 经公网 3306 add/pull 实测通；中间曾因服务端 config `storage=sqlite` 出空批次（mysql 段被总开关忽略），改回 mysql 后正常 |
+| P7 | `setup_deploy.py --gpt-host` 改可选（默认不打印本机配置片段；本机配置=`data/config-gpt.json` 独立维护） | 用户反馈参数名误导；默认部署命令不再含该参数 |
+| P7 | disposition 可取消（用户反馈误触无回头路）：前端再点已选 chip = 清除；后端 null/null 且非 final 放行为清除 | 新增 `test_disposition_cancel_and_reset`；**Ran 31 tests … OK (skipped=1)**；MySQL opt-in ×2 OK（本机测试容器，首轮失败为上个会话遗留脏数据撞 fail-closed，干净重跑稳定过）；镜像重建推 v1 |
+| git | 每 phase commit | `131d5ee` phase1, `10ae9f1` phase2, `f34770e` phase3, `71003a6` phase4, `7ad7518` phase5, `00d61c3` docs, `7bc6978` phase6, `4071b78` deploy.sh, `d7f778f` subpath, `2978808` compose, `0e62024` setup_deploy, `7ac08b8` external-mysql, `b05f29c` docs, `ea7a117` gpt-host optional |
 
 ## 3. 文件清单
 
@@ -117,6 +120,9 @@ data/annotations.jsonl        每次保存 append 一行（gitignore）
   字符串（单选）或字符串数组（reasoning_tags，去重保序）；按 assignment_id 幂等 upsert，
   `revision` 每次 +1，并 append 一行到 `data/annotations.jsonl`。标签不在 schema 词表 → 400。
 - disposition 存储中文枚举：`无法判断 / 缺少上下文 / 跳过 / 稍后再看`。
+- **取消**：`answer=null, disposition=null, is_final=false` = 清除标注（P7 起），revision+1、
+  status 回 in_progress、resume 重新可见；`is_final=true` 时空标注仍 400。前端 = 再点一次
+  已选中的 disposition chip（保留已有 answer 与 final 态）。
 
 ### 导出（stdout 重定向即文件）
 

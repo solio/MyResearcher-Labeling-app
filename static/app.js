@@ -434,6 +434,12 @@ function finalizeCurrent() {
 
 function onDispositionClick(d) {
   const a = state.assignments[state.idx];
+  if (a.disposition === d) {
+    // 再点一次 = 取消：清除 disposition，保留已有答案与 final 状态
+    saveAnnotation({ answer: a.answer, disposition: null, is_final: a.is_final });
+    toast("已取消标记");
+    return;
+  }
   saveAnnotation({ answer: a.answer, disposition: d, is_final: false });
   if (d === "稍后再看") {
     toast("已标记稍后再看");

@@ -234,9 +234,12 @@ class BaseStore:
     def head_labels(self, head):
         return [l["id"] for l in (self.head_glossary(head) or {}).get("labels", [])]
 
-    def _validate_input(self, head, answer, disposition):
+    def _validate_input(self, head, answer, disposition, is_final=False):
         if answer is None and not disposition:
-            raise ValueError("answer 与 disposition 不能同时为空")
+            # null/null 且非 final = 「清除标注」（前端再点一次 disposition 取消），
+            # 放行后 revision+1 落 NULL 行、status 回 in_progress；final 化仍拒绝。
+            if is_final:
+                raise ValueError("answer 与 disposition 不能同时为空")
         if answer is not None:
             labels = self.head_labels(head)
             if self.head_type(head) == "multi":
@@ -400,7 +403,7 @@ class SqliteStore(BaseStore):
             ).fetchone()
             if arow is None:
                 raise KeyError(assignment_id)
-            answer = self._validate_input(arow["head"], answer, disposition)
+            answer = self._validate_input(arow["head"], answer, disposition, is_final)
             prev = self.conn.execute(
                 "SELECT revision FROM annotations WHERE assignment_id = ?", (assignment_id,)
             ).fetchone()
@@ -680,7 +683,7 @@ class MysqlStore(BaseStore):
                 if arow is None:
                     raise KeyError(assignment_id)
                 head = arow["head"]
-                answer = self._validate_input(head, answer, disposition)
+                answer = self._validate_input(head, answer, disposition, is_final)
                 cur.execute(
                     "SELECT revision FROM annotations WHERE assignment_id = %s", (assignment_id,)
                 )

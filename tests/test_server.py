@@ -126,6 +126,35 @@ class TestIdempotentUpsert(ServerTestBase):
                              "disposition": "不是合法词", "is_final": False})
         self.assertEqual(code, 400)
 
+    def test_disposition_cancel_and_reset(self):
+        self.seed()
+        # 终态 → completed；再点取消（null/null 且非 final）→ 回未完成
+        self.post({"assignment_id": "tb:s-1:stance", "answer": None,
+                   "disposition": "跳过", "is_final": False})
+        code, r = self.post({"assignment_id": "tb:s-1:stance", "answer": None,
+                             "disposition": None, "is_final": False})
+        self.assertEqual(code, 200)
+        self.assertEqual(r["revision"], 2)
+        self.assertIsNone(r["disposition"])
+        _, rows = self.get("/api/assignments?batch_id=tb&head=stance")
+        row = next(r2 for r2 in rows if r2["id"] == "tb:s-1:stance")
+        self.assertEqual(row["status"], "in_progress")
+        self.assertIsNone(row["disposition"])
+        # null/null 且 is_final=true 仍 400（不允许 final 化空标注）
+        code, _ = self.post({"assignment_id": "tb:s-1:stance", "answer": None,
+                             "disposition": None, "is_final": True})
+        self.assertEqual(code, 400)
+        # 有草稿答案时取消 disposition：答案保留
+        self.post({"assignment_id": "tb:s-2:stance", "answer": "BULL", "is_final": False})
+        self.post({"assignment_id": "tb:s-2:stance", "answer": "BULL",
+                   "disposition": "稍后再看", "is_final": False})
+        code, r2 = self.post({"assignment_id": "tb:s-2:stance", "answer": "BULL",
+                              "disposition": None, "is_final": False})
+        self.assertEqual(code, 200)
+        self.assertEqual(r2["answer"], "BULL")
+        self.assertIsNone(r2["disposition"])
+        self.assertEqual(r2["is_final"], False)
+
 
 class TestRoundTrip(ServerTestBase):
     def test_import_export_round_trip(self):
