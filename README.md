@@ -84,20 +84,23 @@ python3 tools/import_batch.py --batch mybatch --file samples.jsonl \
 
 ## 部署到服务端
 
-> 当前状态（2026-09-08）：labeler 镜像已推私有仓库（amd64）；本机 GPT 侧 add/pull
-> 已对真实库实测通；服务端首次部署与 nginx 挂载待执行/待验证。
+> 当前状态（2026-09-08）：已上线 `https://testapi.zuzurent.com.cn/labeler/`（nginx 子路径
+> 反代实测通）；更新方式=服务端构建，见下。
 
 ### 方案 A：docker compose + 已有 MySQL（当前实际部署，推荐）
 
 环境：阿里云服务器，公网 `8.148.251.114`、内网 `172.21.153.219`。MySQL 用服务端
 **已有实例**的 `fzz-config` 库与同名账号——无需建库建号，labeler 首次启动自动建
-4 张表（batches/samples/assignments/annotations）。labeler 镜像已预构建为 amd64 并
-推送到私有仓库，**服务器只 pull：不 build、不依赖 Docker Hub**。
+4 张表（batches/samples/assignments/annotations）。
+
+镜像策略：**应用镜像在服务端构建，不推私有仓库**（push 有流量费用）。基础镜像
+`python:3.12-slim`（amd64）已一次性推入私有仓库，服务器构建时经 VPC 端点拉取一次后
+常驻本地缓存；此后每次构建只重建应用层，秒级、零仓库流量。
 
 服务器上首次部署（照抄，`<MySQL密码>` 换成 fzz-config 的真实密码）：
 
 ```bash
-# ① 一次性：登录私有镜像仓库
+# ① 一次性：登录私有镜像仓库（构建时拉基础镜像用）
 docker login --username='xiazhidao@1726161629823217' \
   fangzuzu-docker-registry-vpc.cn-guangzhou.cr.aliyuncs.com
 
@@ -108,8 +111,8 @@ python3 tools/setup_deploy.py \
   --mysql-host 172.21.153.219 --mysql-user fzz-config --mysql-db fzz-config \
   --mysql-password '<MySQL密码>'
 
-# ③ 启动并验证（labeler 只绑 127.0.0.1:8787，交给已有 nginx 反代，见下节）
-docker compose up -d
+# ③ 构建并启动（首次会拉基础镜像，之后秒级；只绑 127.0.0.1:8787 交给 nginx，见下节）
+docker compose up -d --build
 curl http://127.0.0.1:8787/api/batches   # 应能看到 "selftest-gpt-link"（链路自检批次）
 ```
 
@@ -121,13 +124,9 @@ curl http://127.0.0.1:8787/api/batches   # 应能看到 "selftest-gpt-link"（�
 - 通用口径（换其他 MySQL 时）：`--mysql-host` 按容器可达地址填；MySQL 只监听
   127.0.0.1 时容器连不上，需改监听地址或填可达内网 IP。
 - 审计流水落在宿主机 `./data/annotations.jsonl`；标注数据在 MySQL 里。
-- **更新镜像**（本机做，改了代码之后）：
-  ```bash
-  docker buildx build --platform linux/amd64 \
-    -t fangzuzu-docker-registry.cn-guangzhou.cr.aliyuncs.com/fangzuzu/labeler:v1 .
-  docker push fangzuzu-docker-registry.cn-guangzhou.cr.aliyuncs.com/fangzuzu/labeler:v1
-  ```
-  服务器侧：`git pull && docker compose pull && docker compose up -d`。
+- **更新代码**（改了代码之后）：本机推 GitHub → 服务器
+  `git pull && docker compose up -d --build`。基础镜像已常驻缓存，构建秒级；
+  **不要推应用镜像到私有仓库**（push 有流量费，基础镜像只在变更 Python 版本时才重新推）。
 
 ### 方案 B：无 Docker（python3 直接跑）
 

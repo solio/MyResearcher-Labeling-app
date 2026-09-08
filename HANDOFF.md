@@ -61,6 +61,7 @@
 | P7 | 上线（2026-09-08）：服务器 git clone + setup_deploy.py（`--mysql-host 172.21.153.219`，fzz-config 库）+ compose up | `https://testapi.zuzurent.com.cn/labeler/` 全链路通（nginx 子路径反代→容器→fzz-config MySQL）；本机 gpt_tasks 经公网 3306 add/pull 实测通；中间曾因服务端 config `storage=sqlite` 出空批次（mysql 段被总开关忽略），改回 mysql 后正常 |
 | P7 | `setup_deploy.py --gpt-host` 改可选（默认不打印本机配置片段；本机配置=`data/config-gpt.json` 独立维护） | 用户反馈参数名误导；默认部署命令不再含该参数 |
 | P7 | disposition 可取消（用户反馈误触无回头路）：前端再点已选 chip = 清除；后端 null/null 且非 final 放行为清除 | 新增 `test_disposition_cancel_and_reset`；**Ran 31 tests … OK (skipped=1)**；MySQL opt-in ×2 OK（本机测试容器，首轮失败为上个会话遗留脏数据撞 fail-closed，干净重跑稳定过）；镜像重建推 v1 |
+| P7 | 用户定规：**私有仓库 push 有流量费，只允许一次性推基础镜像，应用镜像一律服务端构建** | `python:3.12-slim`（amd64，`56fd2ca9…`）已推入 `…/fangzuzu/`（`docker tag` 直推曾退回单平台旧内容，改 buildx `FROM python:3.12-slim --platform linux/amd64 --push` 确保 amd64）；Dockerfile 改 `ARG BASE_IMAGE`（默认 VPC 端点），compose 改 `build: .`；本机冒烟（挂临时 sqlite config）API `[]` 通过；更新流程=`git pull && docker compose up -d --build`，不再 `compose pull`；labeler:v1 遗留仓库（无害，可 ACR 控制台删） |
 | git | 每 phase commit | `131d5ee` phase1, `10ae9f1` phase2, `f34770e` phase3, `71003a6` phase4, `7ad7518` phase5, `00d61c3` docs, `7bc6978` phase6, `4071b78` deploy.sh, `d7f778f` subpath, `2978808` compose, `0e62024` setup_deploy, `7ac08b8` external-mysql, `b05f29c` docs, `ea7a117` gpt-host optional |
 
 ## 3. 文件清单
@@ -81,10 +82,10 @@ tools/export_annotations.py   导出 jsonl/csv（--final-only；委托 SqliteSto
 tools/gpt_tasks.py            GPT 专用：add 加任务 / pull 拉结果（--config，sqlite/mysql 通用）
 tools/setup_deploy.py         服务器部署一次性设置：生成 config.json（指向自备 MySQL，--mysql-password 必填、chmod 600、拒绝覆盖、过 load_config 校验），打印建库 SQL 与本地 GPT 端配置
 deploy/labeler.service        systemd 单元模板（服务器开机自启/崩溃重启；无 Docker 场景）
-Dockerfile                    python:3.12-slim + pymysql，PYTHONUNBUFFERED=1；本机 buildx --platform linux/amd64 构建后推私有仓库，服务器只 pull
+Dockerfile                    ARG BASE_IMAGE 默认私有仓库 python:3.12-slim（amd64，已一次性推入，本机验证用 --build-arg 覆盖公网端点）+ pymysql，PYTHONUNBUFFERED=1；服务端构建应用层
 requirements.txt              仅 pymysql>=1.1（镜像构建用）
 .dockerignore                 构建上下文排除 .git/data/config.json/.env/tests/文档
-docker-compose.yml            仅 labeler 服务：私有仓库 labeler:v1 镜像、回环 8787 给 nginx、extra_hosts host-gateway（容器连宿主机 MySQL）、挂 config.json/data；MySQL 由使用方自备实例
+docker-compose.yml            仅 labeler 服务：build: .（服务端构建，不推应用镜像）、回环 8787 给 nginx、extra_hosts host-gateway（容器连宿主机 MySQL）、挂 config.json/data；MySQL 由使用方自备实例
 tools/seed_demo.py            20 条虚构文本 demo
 tests/test_server.py          stdlib unittest ×15（HTTP/存储行为，后端无关）
 tests/test_config_and_tools.py  配置校验 ×9 + gpt_tasks 子进程往返 ×4 + MySQL opt-in ×2

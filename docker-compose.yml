@@ -1,8 +1,8 @@
 services:
   labeler:
-    # 预构建 amd64 镜像（本机 buildx 构建+推送私有仓库；服务器只 pull，不 build、不依赖 Docker Hub）
-    # 更新镜像：docker buildx build --platform linux/amd64 -t fangzuzu-docker-registry.cn-guangzhou.cr.aliyuncs.com/fangzuzu/labeler:v1 . && docker push <同串>
-    image: fangzuzu-docker-registry-vpc.cn-guangzhou.cr.aliyuncs.com/fangzuzu/labeler:v1
+    # 服务端构建：基础镜像（python:3.12-slim）取自私有仓库并常驻缓存，
+    # 应用层每次 up -d --build 本地重建；改代码后不推镜像、不产生额外仓库流量
+    build: .
     restart: unless-stopped
     ports:
       - "127.0.0.1:8787:8787"   # 只绑本机回环，交给已有 nginx 反代
