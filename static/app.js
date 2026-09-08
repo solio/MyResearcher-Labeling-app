@@ -50,8 +50,13 @@ function toast(msg, isErr) {
   toastTimer = setTimeout(() => el.classList.add("hidden"), 1600);
 }
 
+// API 基址按页面所在目录解析：挂在任意路径前缀（如 nginx /labeler/）下都成立。
+// 入口 URL 必须以 / 结尾（nginx 侧用 location = /labeler {return 301 …} 兜底）。
+const API_BASE = new URL("api/", document.baseURI).href;
+
 async function api(path, opts) {
-  const res = await fetch(path, opts);
+  const url = API_BASE + path.replace(/^\/api\//, "");
+  const res = await fetch(url, opts);
   let body = null;
   try { body = await res.json(); } catch (e) { /* 非 JSON 响应 */ }
   if (!res.ok) throw new Error((body && body.error) || `HTTP ${res.status}`);

@@ -45,6 +45,8 @@
 | P6 | `python3 tools/gpt_tasks.py pull --config …`（jsonl / `--final-only --format csv`） | EXIT=0；jsonl 4 行（中文 metadata 经 utf8mb4 无损）；csv 仅 final 行 |
 | P6 | `python3 server.py --port 8789`（无 config.json，sqlite 默认） | EXIT=0，`/api/batches` 返回 demo batch——历史用法零变化 |
 | P6 | `git check-ignore config.json data/config.test.json` | 均命中 .gitignore（凭据不入库） |
+| P6b | `python3 -m unittest discover tests`（含新增 tests/test_subpath.py） | **Ran 30 tests … OK (skipped=1)**，EXIT=0 |
+| P6b | 浏览器实测 `/labeler/` 前缀挂载（prefix-mounter 模拟 nginx 剥前缀） | resume→多选 toggle draft→完成本条 final(revision=2)→自动跳下一条→⇄返回选择屏全通过；网络面板确认全部请求命中 `/labeler/api/...`；服务端 `done=1`、is_final/answer 正确；静态/manifest 走相对路径 |
 | git | 每 phase commit | `131d5ee` phase1, `10ae9f1` phase2, `f34770e` phase3, `71003a6` phase4, `7ad7518` phase5, `00d61c3` docs, phase6=本提交 |
 
 ## 3. 文件清单
@@ -68,6 +70,7 @@ deploy/labeler.service        systemd 单元模板（服务器开机自启/崩�
 tools/seed_demo.py            20 条虚构文本 demo
 tests/test_server.py          stdlib unittest ×15（HTTP/存储行为，后端无关）
 tests/test_config_and_tools.py  配置校验 ×9 + gpt_tasks 子进程往返 ×4 + MySQL opt-in ×2
+tests/test_subpath.py        子路径挂载 ×2（prefix 剥离 API/静态 + 前端无根绝对路径守卫）
 README.md                     使用说明 + 手动测试清单
 data/labeler.db               运行时创建（gitignore）
 data/annotations.jsonl        每次保存 append 一行（gitignore）

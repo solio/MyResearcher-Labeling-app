@@ -101,6 +101,22 @@ python3 tools/import_batch.py --batch mybatch --file samples.jsonl \
 推荐 MySQL 容器发布在服务器 `13306` 端口、两端配置都写服务器公网 IP（安全组放行 13306）；
 若服务器侧只想走内网，可把该端配置的 host 改为 `127.0.0.1`，仅这一项允许不同。
 
+## 挂到已有 nginx（子路径）
+
+前端资源与 API 请求已**全部相对路径化**，挂任意子路径零改动，nginx 只加两个 location：
+
+```nginx
+location = /labeler { return 301 /labeler/; }   # 无斜杠入口重定向（必须）
+location /labeler/ {
+    proxy_pass http://127.0.0.1:8787/;          # 末尾 / 会剥掉 /labeler 前缀
+    proxy_set_header Host $host;
+}
+```
+
+- 直接访问 `https://你的域名/labeler/` 即可；前端无绝对路径，http/https、有无反代都无感。
+- PWA manifest/图标同为相对路径，添加主屏幕在子路径下照常可用。
+- 本地直连 `http://192.168.x.x:8787/`（手机局域网场景）不受影响，同一份代码两种挂法通用。
+
 ## 导出
 
 ```bash
