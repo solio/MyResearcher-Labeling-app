@@ -84,54 +84,46 @@ python3 tools/import_batch.py --batch mybatch --file samples.jsonl \
 
 ## 部署到服务端
 
-### 方案 A：docker compose（推荐，自带 MySQL）
+### 方案 A：git clone + docker compose（推荐，自带 MySQL）
 
 compose 里 labeler 用 `build: .` 在**服务器上构建镜像**，没有本机导出镜像/芯片架构问题
-（纯 Python + 原生 JS，构建秒级）。服务器要求：Docker + compose 插件。
+（纯 Python + 原生 JS，构建秒级）。服务器要求：git、Docker + compose 插件。
 
 ```bash
-# ① 本机：同步代码到服务器（rsync，不含 data/、config.json、.env、日志）
-./deploy.sh --host user@server --path /srv/myresearcher-labeler
+# ① 服务器上 clone 代码
+git clone <你的仓库地址> MyResearcher-Labeling-app
+cd MyResearcher-Labeling-app
 
-# ② 服务器：放两份配置文件
-cd /srv/myresearcher-labeler
-nano config.json                       # 服务端视角：storage=mysql, host=mysql, port=3306
-cp .env.example .env && nano .env      # 设 MYSQL_ROOT_PASSWORD；MYSQL_PASSWORD 必须与 config.json 一致
+# ② 一次性生成配置（随机密码写入 .env + config.json，并打印本地 GPT 用的配置）
+python3 tools/setup_deploy.py --gpt-host <服务器公网IP>
 
-# ③ 启动（含 MySQL，healthcheck 通过后 labeler 才启动）
+# ③ 启动（自带 MySQL，healthcheck 通过后 labeler 才启动）
 docker compose up -d --build
 
 # ④ 验证
 curl http://127.0.0.1:8787/api/batches   # → []
-docker compose logs labeler              # 应有「已启动 … storage=mysql」
 ```
 
-- labeler 只绑 `127.0.0.1:8787`，交给已有 nginx 反代（见下节）；MySQL 发布 `13306` 供本地 GPT 用
-  `gpt_tasks.py` 远程读写（记得安全组放行 13306）。
-- **两份配置文件**：服务端 `config.json`（host=mysql, port=3306）与本地 GPT 的另一份
-  （host=服务器公网 IP, port=13306），除 host/port 外字段必须一致。
+- ② 生成的 `.env`/`config.json` 已 gitignore、权限 600；已有文件时拒绝覆盖（EXIT=2）。
+- ② 会打印一份「本地 GPT 机器」配置，存为本地 `config-gpt.json`，用 `gpt_tasks.py` 经 13306
+  远程读写（安全组放行 13306）。
+- labeler 只绑 `127.0.0.1:8787`，交给已有 nginx 反代（见下节）。
 - 数据持久化：标注数据在 docker volume `mysql-data`；审计流水在宿主机 `./data/annotations.jsonl`。
-- 日常更新：重跑 ① 再 `docker compose up -d --build` 即可（重建镜像）。
-- 没有 deploy.sh 也可以直接 `git clone`/`scp` 整个目录到服务器，效果相同。
+- 日常更新：`git pull && docker compose up -d --build`。
 
-### 方案 B：无 Docker（拷文件 + python3）
+### 方案 B：无 Docker（python3 直接跑）
 
-项目是纯 Python 源码 + 原生 JS，**部署 = 拷文件**：没有编译产物、不需要镜像，
-本机 arm64 与 x86_64 服务器架构无关（PyMySQL 为纯 Python 驱动，同样无架构问题）。
-服务器唯一要求：`python3 ≥3.8`（mysql 模式另装 `pip3 install --user pymysql`）。
+git clone 后**默认零配置可用**（无 config.json 即 sqlite，零依赖）：
 
 ```bash
-./deploy.sh --host user@server --path /srv/myresearcher-labeler \
-            --push-config --install-deps     # 首次部署；日常更新去掉这两个参数
+git clone <你的仓库地址> MyResearcher-Labeling-app
+cd MyResearcher-Labeling-app
+python3 server.py --port 8787
 ```
 
-脚本行为：rsync 同步代码（**排除 data/、config.json、.env、日志**）→ 远端无 config.json 才上传
-（绝不覆盖远端已有配置）→ 校验远端 python3/config.json/pymysql → 打印启动方式。
-开机自启用 `deploy/labeler.service`（systemd 模板，改 WorkingDirectory/User/端口）。
-
-此方案 MySQL 自备（容器或主机安装均可），注意 `mysql.host` 两端各自可达：
-推荐 MySQL 容器发布在服务器 `13306` 端口、两端配置都写服务器公网 IP（安全组放行 13306）；
-若服务器侧只想走内网，可把该端配置的 host 改为 `127.0.0.1`，仅这一项允许不同。
+要 mysql 模式则自备 MySQL 并手写 `config.json`（模板 `config.example.json`，
+`pip3 install --user pymysql`）；开机自启用 `deploy/labeler.service`（systemd 模板，
+改 WorkingDirectory/User/端口）。
 
 ## 挂到已有 nginx（子路径）
 

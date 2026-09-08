@@ -51,7 +51,10 @@
 | P6c | compose 全链路：宿主机 `gpt_tasks.py add`（127.0.0.1:13306）→ 容器 `GET /api/batches` → POST 标注（is_final=1）→ 宿主机 `gpt_tasks.py pull --final-only` | 全通：GPT 写入的 batch 网页立即可见；拉回 `answer=BULL` 与 metadata（utf8mb4 无损）；审计行落宿主机 `./data/annotations.jsonl`（容器内路径 /app/data/，volume 挂载生效） |
 | P6c | `python3 -m unittest discover tests`（回归） | **Ran 30 tests … OK (skipped=1)**，EXIT=0 |
 | P6c | `docker compose down -v` | 容器/网络/volume 全部移除；临时 config.json/.env 删除（gitignore 命中） |
-| git | 每 phase commit | `131d5ee` phase1, `10ae9f1` phase2, `f34770e` phase3, `71003a6` phase4, `7ad7518` phase5, `00d61c3` docs, phase6=本提交 |
+| P6d | `python3 tools/setup_deploy.py --gpt-host 203.0.113.10` | EXIT=0；生成 .env + config.json（随机密码两份一致、chmod 600）并打印 GPT 端配置；再跑一次 EXIT=2（拒绝覆盖） |
+| P6d | 生成物 `load_config('config.json')` + `docker compose up -d --build` + `curl /api/batches` + `down -v` | 严格校验通过；双容器 healthy、API 返回 `[]`；随后清理（镜像缓存保留） |
+| P6d | `git rm deploy.sh`（rsync 同步方案废除：代码经 git clone 分发） | deploy.sh/.dockerignore/README/HANDOFF 同步更新 |
+| git | 每 phase commit | `131d5ee` phase1, `10ae9f1` phase2, `f34770e` phase3, `71003a6` phase4, `7ad7518` phase5, `00d61c3` docs, `7bc6978` phase6, `4071b78` deploy.sh, `d7f778f` subpath, `2978808` compose |
 
 ## 3. 文件清单
 
@@ -69,7 +72,7 @@ schema/annotation-schema.v1.json  owner 可编辑释义：head 问题句/定义/
 tools/import_batch.py         导入 samples.jsonl（fail-closed；委托 SqliteStore，保留 --db 旧用法）
 tools/export_annotations.py   导出 jsonl/csv（--final-only；委托 SqliteStore，保留 --db 旧用法）
 tools/gpt_tasks.py            GPT 专用：add 加任务 / pull 拉结果（--config，sqlite/mysql 通用）
-deploy.sh                     部署到服务端：rsync 纯文件同步（排除凭据/数据/.env），打印 compose/systemd 两种启动方式
+tools/setup_deploy.py         服务器部署一次性设置：生成 .env + config.json（随机密码、chmod 600、拒绝覆盖），打印本地 GPT 端配置
 deploy/labeler.service        systemd 单元模板（服务器开机自启/崩溃重启；无 Docker 场景）
 Dockerfile                    python:3.12-slim + pymysql，PYTHONUNBUFFERED=1，CMD server.py --config config.json
 requirements.txt              仅 pymysql>=1.1（镜像构建用）
