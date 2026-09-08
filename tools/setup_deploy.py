@@ -5,12 +5,14 @@ git clone 后在服务器上跑一次，随后 docker compose up -d 即可：
 
     python3 tools/setup_deploy.py --mysql-password '已有MySQL的密码' \
         [--mysql-host host.docker.internal] [--mysql-port 3306] \
-        [--mysql-user labeler] [--mysql-db myresearcher_labeler] [--gpt-host 服务器公网IP]
+        [--mysql-user labeler] [--mysql-db myresearcher_labeler]
 
 - MySQL 由使用方自备（宿主机实例/容器/其他主机均可），需先建库建号，命令见运行时提示。
 - mysql.host 填「labeler 容器能到达」的地址：宿主机实例用默认 host.docker.internal
   （compose 已配 host-gateway）；容器或其他主机填内网 IP。
-- config.json 已 gitignore；已存在时拒绝覆盖（EXIT=2）。结束时打印本地 GPT 机器用的配置。
+- config.json 已 gitignore；已存在时拒绝覆盖（EXIT=2）。
+- 可选 --gpt-host <地址>：额外打印一份「本机 gpt_tasks 配置」片段，其 mysql.host 填
+  本机访问该 MySQL 的地址（如服务器公网 IP）。本机配置已单独就绪时无需此参数。
 """
 import argparse
 import json
@@ -28,8 +30,8 @@ def main():
     ap.add_argument("--mysql-user", default="labeler")
     ap.add_argument("--mysql-password", required=True)
     ap.add_argument("--mysql-db", default="myresearcher_labeler")
-    ap.add_argument("--gpt-host", default="<服务器IP>",
-                    help="打印给本地 GPT 配置用的 host（填服务器公网 IP）")
+    ap.add_argument("--gpt-host", default=None,
+                    help="可选：同时打印本机 gpt_tasks 配置片段，其 mysql.host 填本机访问该 MySQL 的地址")
     args = ap.parse_args()
 
     cfg_path = ROOT / "config.json"
@@ -57,13 +59,15 @@ def main():
     print(f"    CREATE DATABASE IF NOT EXISTS {args.mysql_db} DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;")
     print(f"    CREATE USER IF NOT EXISTS '{args.mysql_user}'@'%' IDENTIFIED BY '<密码>';")
     print(f"    GRANT ALL PRIVILEGES ON {args.mysql_db}.* TO '{args.mysql_user}'@'%';")
-    print("[setup] 本地 GPT 机器的配置（存为 config-gpt.json；安全组放行该 MySQL 端口）：")
-    print(json.dumps({
-        "storage": "mysql",
-        "mysql": {"host": args.gpt_host, "port": args.mysql_port,
-                  "user": args.mysql_user, "password": args.mysql_password,
-                  "database": args.mysql_db},
-    }, ensure_ascii=False, indent=2))
+    if args.gpt_host:
+        print("[setup] 本机 gpt_tasks 配置片段（可选；mysql.host=本机访问该 MySQL 的地址，"
+              "安全组放行该端口）：")
+        print(json.dumps({
+            "storage": "mysql",
+            "mysql": {"host": args.gpt_host, "port": args.mysql_port,
+                      "user": args.mysql_user, "password": args.mysql_password,
+                      "database": args.mysql_db},
+        }, ensure_ascii=False, indent=2))
     return 0
 
 

@@ -106,8 +106,7 @@ git clone <你的仓库地址> MyResearcher-Labeling-app
 cd MyResearcher-Labeling-app
 python3 tools/setup_deploy.py \
   --mysql-host 172.21.153.219 --mysql-user fzz-config --mysql-db fzz-config \
-  --mysql-password '<MySQL密码>' \
-  --gpt-host 8.148.251.114
+  --mysql-password '<MySQL密码>'
 
 # ③ 启动并验证（labeler 只绑 127.0.0.1:8787，交给已有 nginx 反代，见下节）
 docker compose up -d
@@ -116,9 +115,9 @@ curl http://127.0.0.1:8787/api/batches   # 应能看到 "selftest-gpt-link"（�
 
 - **服务端 `mysql.host` 必须填内网 `172.21.153.219`**（容器到宿主机内网 IP 可路由），
   不要用默认的 `host.docker.internal`——该 MySQL 不一定监听 docker 网关地址。
-- `--gpt-host 8.148.251.114`：setup_deploy.py 会打印一份**本机 GPT** 配置（host=公网
-  IP）。本机这份已配置为 `data/config-gpt.json`（gitignored），公网 3306 已放行并实测
-  add/pull 双向通，日常用法见「GPT 加任务 / 拉结果」。
+- 本机侧（Mac 上跑 `gpt_tasks.py` 加任务/拉结果）的配置就是 `data/config-gpt.json`
+  （gitignored），已指向公网 `8.148.251.114:3306` 并实测双向通，与服务器部署无关，
+  用法见「GPT 加任务 / 拉结果」。
 - 通用口径（换其他 MySQL 时）：`--mysql-host` 按容器可达地址填；MySQL 只监听
   127.0.0.1 时容器连不上，需改监听地址或填可达内网 IP。
 - 审计流水落在宿主机 `./data/annotations.jsonl`；标注数据在 MySQL 里。
