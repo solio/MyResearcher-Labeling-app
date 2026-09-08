@@ -1,0 +1,33 @@
+services:
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-myresearcher_labeler}
+      MYSQL_USER: ${MYSQL_USER:-labeler}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    ports:
+      - "13306:3306"          # 供本地 GPT（gpt_tasks.py）远程读写；公网需放行安全组
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  labeler:
+    build: .                   # 在服务器上构建镜像，无本机导出/架构问题
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8787:8787"  # 只绑本机回环，交给已有 nginx 反代，不直接暴露公网
+    volumes:
+      - ./config.json:/app/config.json:ro   # 服务端视角配置（mysql.host=mysql, port=3306）
+      - ./data:/app/data                    # jsonl 审计流水（mysql 模式下无 db 文件）
+
+volumes:
+  mysql-data:

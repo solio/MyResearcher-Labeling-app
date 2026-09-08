@@ -32,7 +32,7 @@ done
 command -v rsync >/dev/null || { echo "[deploy] 本机缺少 rsync" >&2; exit 2; }
 
 RSYNC_FLAGS=(-av
-  --exclude .git/ --exclude data/ --exclude config.json
+  --exclude .git/ --exclude data/ --exclude config.json --exclude .env
   --exclude __pycache__/ --exclude '*.pyc' --exclude .DS_Store
   --exclude BLOCKED.md --exclude '*.log')
 [ "$DRY_RUN" = 1 ] && RSYNC_FLAGS+=(-n)
@@ -51,7 +51,8 @@ else
     scp -q config.json "$HOST:$DST/config.json"
   else
     echo "[deploy] 远端缺少 config.json：手工放置，或重跑加 --push-config" >&2
-    echo "         两端 mysql.host 需各自可达，建议都写服务器公网 IP（见 README 部署节）" >&2
+    echo "         这是『服务端视角』配置：compose 模式 host=mysql port=3306；" >&2
+    echo "         非 compose 模式 host=127.0.0.1。本地 GPT 另用一份（host=服务器IP:13306），见 README 部署节" >&2
     exit 1
   fi
 fi
@@ -73,10 +74,13 @@ else
 fi
 
 echo "==> 4/4 启动（二选一）"
-echo "  A) systemd 推荐（开机自启/崩溃重启）："
-echo "     scp deploy/labeler.service $HOST:/tmp/ && ssh $HOST 'sudo mv /tmp/labeler.service /etc/systemd/system/'"
-echo "     （先改 unit 里的 WorkingDirectory/User/端口）"
-echo "     ssh $HOST 'sudo systemctl daemon-reload && sudo systemctl enable --now myresearcher-labeler'"
-echo "  B) 手动："
-echo "     ssh $HOST 'cd $DST && nohup python3 server.py --config config.json --port $PORT >> labeler.log 2>&1 &'"
-echo "  访问: http://<服务器IP>:$PORT  （放行安全组/防火墙；mysql 记得也放行给本地 GPT 机器）"
+echo "  A) docker compose 推荐（自带 MySQL：healthcheck/自动重启/数据卷，镜像在服务器构建）："
+echo "     ssh $HOST 'cd $DST && cp .env.example .env && nano .env   # 设置两个密码，MYSQL_PASSWORD 需与 config.json 一致'"
+echo "     ssh $HOST 'cd $DST && docker compose up -d --build'"
+echo "     （要求服务端 config.json 为 storage=mysql, host=mysql, port=3306）"
+echo "  B) 无 Docker："
+echo "     systemd：scp deploy/labeler.service $HOST:/tmp/ && ssh $HOST 'sudo mv /tmp/labeler.service /etc/systemd/system/'"
+echo "     （改 unit 的 WorkingDirectory/User/端口）ssh $HOST 'sudo systemctl daemon-reload && sudo systemctl enable --now myresearcher-labeler'"
+echo "     手动：ssh $HOST 'cd $DST && nohup python3 server.py --config config.json --port $PORT >> labeler.log 2>&1 &'"
+echo "  A 访问: http://<服务器IP>:8787 （compose 版只绑本机回环，需配 nginx 反代）；本地 GPT 经 13306 连 MySQL"
+echo "  B 访问: http://<服务器IP>:$PORT  （放行安全组/防火墙；mysql 记得也放行给本地 GPT 机器）"

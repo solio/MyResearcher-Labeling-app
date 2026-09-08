@@ -47,6 +47,10 @@
 | P6 | `git check-ignore config.json data/config.test.json` | 均命中 .gitignore（凭据不入库） |
 | P6b | `python3 -m unittest discover tests`（含新增 tests/test_subpath.py） | **Ran 30 tests … OK (skipped=1)**，EXIT=0 |
 | P6b | 浏览器实测 `/labeler/` 前缀挂载（prefix-mounter 模拟 nginx 剥前缀） | resume→多选 toggle draft→完成本条 final(revision=2)→自动跳下一条→⇄返回选择屏全通过；网络面板确认全部请求命中 `/labeler/api/...`；服务端 `done=1`、is_final/answer 正确；静态/manifest 走相对路径 |
+| P6c | `docker compose up -d --build`（本机 Docker Desktop，mysql:8.0 + python:3.12-slim） | 双容器 Up，mysql healthcheck 通过后 labeler 才启动；`docker compose logs` 可见 `storage=mysql / mysql://labeler@mysql:3306/...`（Dockerfile 已加 PYTHONUNBUFFERED=1） |
+| P6c | compose 全链路：宿主机 `gpt_tasks.py add`（127.0.0.1:13306）→ 容器 `GET /api/batches` → POST 标注（is_final=1）→ 宿主机 `gpt_tasks.py pull --final-only` | 全通：GPT 写入的 batch 网页立即可见；拉回 `answer=BULL` 与 metadata（utf8mb4 无损）；审计行落宿主机 `./data/annotations.jsonl`（容器内路径 /app/data/，volume 挂载生效） |
+| P6c | `python3 -m unittest discover tests`（回归） | **Ran 30 tests … OK (skipped=1)**，EXIT=0 |
+| P6c | `docker compose down -v` | 容器/网络/volume 全部移除；临时 config.json/.env 删除（gitignore 命中） |
 | git | 每 phase commit | `131d5ee` phase1, `10ae9f1` phase2, `f34770e` phase3, `71003a6` phase4, `7ad7518` phase5, `00d61c3` docs, phase6=本提交 |
 
 ## 3. 文件清单
@@ -65,8 +69,13 @@ schema/annotation-schema.v1.json  owner 可编辑释义：head 问题句/定义/
 tools/import_batch.py         导入 samples.jsonl（fail-closed；委托 SqliteStore，保留 --db 旧用法）
 tools/export_annotations.py   导出 jsonl/csv（--final-only；委托 SqliteStore，保留 --db 旧用法）
 tools/gpt_tasks.py            GPT 专用：add 加任务 / pull 拉结果（--config，sqlite/mysql 通用）
-deploy.sh                     部署到服务端：rsync 纯文件同步（排除凭据/数据），无镜像无构建
-deploy/labeler.service        systemd 单元模板（服务器开机自启/崩溃重启）
+deploy.sh                     部署到服务端：rsync 纯文件同步（排除凭据/数据/.env），打印 compose/systemd 两种启动方式
+deploy/labeler.service        systemd 单元模板（服务器开机自启/崩溃重启；无 Docker 场景）
+Dockerfile                    python:3.12-slim + pymysql，PYTHONUNBUFFERED=1，CMD server.py --config config.json
+requirements.txt              仅 pymysql>=1.1（镜像构建用）
+.dockerignore                 构建上下文排除 .git/data/config.json/.env/tests/文档
+docker-compose.yml            mysql:8.0（healthcheck、volume mysql-data、发布 13306）+ labeler（build: .，回环 8787，挂 config.json/data）
+.env.example                  compose 凭据模板（MYSQL_PASSWORD 须与 config.json 一致；.env 已 gitignore）
 tools/seed_demo.py            20 条虚构文本 demo
 tests/test_server.py          stdlib unittest ×15（HTTP/存储行为，后端无关）
 tests/test_config_and_tools.py  配置校验 ×9 + gpt_tasks 子进程往返 ×4 + MySQL opt-in ×2
@@ -141,6 +150,8 @@ data/annotations.jsonl        每次保存 append 一行（gitignore）
    `ping(reconnect=True)` 自愈；多进程同时写依赖 MySQL 事务，无跨进程优先级仲裁。
 10. `config.json` 相对路径按**配置文件所在目录**解析；复制配置到其他机器时需保持目录结构
     （或改绝对路径）。凭据明文存于 config.json——已 gitignore，但不得随仓库/截图外传。
+11. compose 版 labeler 只绑 `127.0.0.1:8787`（设计如此，需已有 nginx 反代对外）；MySQL `13306`
+    若映射公网需安全组放行并保证密码强度；HEAD 释义改动需 `docker compose up -d --build`（重建镜像）。
 
 ## 8. 开放集成问题（待 owner 拍板）
 

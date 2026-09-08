@@ -47,4 +47,5 @@ static/*.bundle.js
 # ---- 运行时数据 / 敏感配置 / 阻塞记录 ----
 data/
 config.json
+.env
 BLOCKED.md
