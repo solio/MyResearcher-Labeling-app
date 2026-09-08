@@ -26,6 +26,7 @@ const state = {
   session: null,       // { batchId, head }
   batches: [],
   batchesError: null,
+  headCounts: {},      // headId -> {total, left}（当前选中 batch 的未完成量）
   assignments: [],
   idx: 0,
   details: new Map(),  // assignment_id -> {sample, glossary, invariants}
@@ -220,6 +221,12 @@ function saveSession() {
 
 /* ---------- 开始屏 ---------- */
 
+function headSubText(batchId, headId) {
+  if (!batchId) return "";
+  const c = state.headCounts[headId];
+  return c && c.total ? `剩 ${c.left} / ${c.total}` : "";
+}
+
 function renderStart() {
   $("#screen-main").classList.add("hidden");
   $("#screen-start").classList.remove("hidden");
@@ -237,21 +244,25 @@ function renderStart() {
     if (state.session && state.session.batchId === b.id) btn.classList.add("selected");
     btn.addEventListener("click", () => {
       state.session = { batchId: b.id, head: state.session && state.session.batchId === b.id ? state.session.head : null };
+      state.headCounts = {};
       renderStart();
+      refreshStartData();
     });
     bl.appendChild(btn);
   }
   const hl = $("#head-list");
   hl.innerHTML = "";
+  const selBatchId = state.session && state.session.batchId;
   for (const h of HEADS) {
     const btn = document.createElement("button");
     btn.className = "pick-item";
-    btn.textContent = h.name;
+    btn.innerHTML = `<span>${h.name}</span><span class="sub">${headSubText(selBatchId, h.id)}</span>`;
     if (state.session && state.session.head === h.id) btn.classList.add("selected");
     btn.addEventListener("click", () => {
       if (!state.session) state.session = { batchId: null, head: null };
       state.session.head = h.id;
       renderStart();
+      refreshStartData();
     });
     hl.appendChild(btn);
   }
@@ -260,6 +271,41 @@ function renderStart() {
   $("#start-hint").textContent = ready
     ? `将进入 ${state.session.batchId} · ${headName(state.session.head)}（会话内锁定该 head）`
     : "先选择 batch 和 head";
+}
+
+/* 拉取选择页数据：batch 完成度 + 选中 batch 各 head 的剩余量（离线回退本地缓存） */
+async function fetchHeadCount(batchId, headId) {
+  let rows = cachedList(batchId, headId);
+  try {
+    rows = await api(`/api/assignments?batch_id=${encodeURIComponent(batchId)}&head=${encodeURIComponent(headId)}`);
+    cacheList(batchId, headId, rows);
+  } catch (e) { /* 离线用缓存 */ }
+  if (!Array.isArray(rows)) return null;
+  return { total: rows.length, left: rows.filter((r) => !isDone(r)).length };
+}
+
+let startRefreshBusy = false;
+async function refreshStartData() {
+  if (startRefreshBusy) return;
+  startRefreshBusy = true;
+  try {
+    const batchId = state.session && state.session.batchId;
+    const jobs = [
+      api("/api/batches").then((bs) => { state.batches = bs; }).catch(() => {}),
+    ];
+    if (batchId) {
+      for (const h of HEADS) {
+        jobs.push(
+          fetchHeadCount(batchId, h.id).then((c) => { if (c) state.headCounts[h.id] = c; })
+        );
+      }
+    }
+    await Promise.all(jobs);
+  } finally {
+    startRefreshBusy = false;
+  }
+  if ($("#screen-start").classList.contains("hidden")) return; // 已进入标注屏
+  renderStart();
 }
 
 /* ---------- 主屏 ---------- */
@@ -545,6 +591,7 @@ function showSwitchSheet() {
     closeSheet();
     state.session = { batchId: state.session.batchId, head: null };
     renderStart();
+    refreshStartData();
   });
 }
 
@@ -603,6 +650,7 @@ async function init() {
     if (ok) return;
   }
   renderStart();
+  refreshStartData();
 }
 
 setInterval(() => {

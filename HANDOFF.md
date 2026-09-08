@@ -62,6 +62,7 @@
 | P7 | `setup_deploy.py --gpt-host` 改可选（默认不打印本机配置片段；本机配置=`data/config-gpt.json` 独立维护） | 用户反馈参数名误导；默认部署命令不再含该参数 |
 | P7 | disposition 可取消（用户反馈误触无回头路）：前端再点已选 chip = 清除；后端 null/null 且非 final 放行为清除 | 新增 `test_disposition_cancel_and_reset`；**Ran 31 tests … OK (skipped=1)**；MySQL opt-in ×2 OK（本机测试容器，首轮失败为上个会话遗留脏数据撞 fail-closed，干净重跑稳定过）；镜像重建推 v1 |
 | P7 | 用户定规：**私有仓库 push 有流量费，只允许一次性推基础镜像，应用镜像一律服务端构建** | `python:3.12-slim`（amd64，`56fd2ca9…`）已推入 `…/fangzuzu/`（`docker tag` 直推曾退回单平台旧内容，改 buildx `FROM python:3.12-slim --platform linux/amd64 --push` 确保 amd64）；Dockerfile 改 `ARG BASE_IMAGE`（默认 VPC 端点），compose 改 `build: .`；本机冒烟（挂临时 sqlite config）API `[]` 通过；更新流程=`git pull && docker compose up -d --build`，不再 `compose pull`；labeler:v1 遗留仓库（无害，可 ACR 控制台删） |
+| P7 | 选择页各 head 显示剩余量（用户需求：换 head 回选择页要知道还剩多少没填） | `renderStart` head 按钮加"剩 N / M"副文本；`refreshStartData` 并行拉 `/api/batches` + 7 个 head 的 `/api/assignments`（离线回退 `cachedList`），返回选择页/切 batch 时刷新，进入标注屏后不回刷；浏览器实测：标注前 stance 剩 20/20 → 标 1 条 final → ⇄ 返回剩 19/20、batch 行"完成 3/140"同步刷新 |
 | git | 每 phase commit | `131d5ee` phase1, `10ae9f1` phase2, `f34770e` phase3, `71003a6` phase4, `7ad7518` phase5, `00d61c3` docs, `7bc6978` phase6, `4071b78` deploy.sh, `d7f778f` subpath, `2978808` compose, `0e62024` setup_deploy, `7ac08b8` external-mysql, `b05f29c` docs, `ea7a117` gpt-host optional |
 
 ## 3. 文件清单
