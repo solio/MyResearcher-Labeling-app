@@ -1,0 +1,17 @@
+{
+  "storage": "sqlite",
+  "jsonl_path": "data/annotations.jsonl",
+  "sqlite": {
+    "db_path": "data/labeler.db"
+  },
+  "mysql": {
+    "host": "127.0.0.1",
+    "port": 3306,
+    "user": "labeler",
+    "password": "在这里填数据库密码",
+    "database": "myresearcher_labeler",
+    "charset": "utf8mb4",
+    "connect_timeout": 10,
+    "ssl_ca": null
+  }
+}

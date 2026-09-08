@@ -1,6 +1,6 @@
 # MyResearcher-Labeling-app
 
-单人手机标注工具。后端仅 Python 标准库（`http.server` + `sqlite3`），前端零构建零依赖（原生 JS + PWA manifest），`git` 管理按 phase 提交。
+单人手机标注工具。默认后端零依赖（Python 标准库 `http.server` + `sqlite3`），可选 MySQL 存储；前端零构建零依赖（原生 JS + PWA manifest），`git` 管理按 phase 提交。
 
 标签体系（6 个单标签 head + 15 标签多选 `reasoning_tags`）抄录自
 `MyResearcher-ModelTraining/schema/semantic-schema-calibrated-v0.2.1.json`（只读，class_order 未改动）。
@@ -8,15 +8,53 @@
 
 > 完整交付文档见 **[使用说明与接口说明.md](使用说明与接口说明.md)**（界面操作、HTTP API、CLI、数据契约、localStorage 约定）。
 
+## 存储模式与配置文件
+
+存储后端由配置文件决定（默认读取项目根 `config.json`，所有 CLI 可用 `--config` 指定其他路径）。
+配置含数据库凭据，**已 gitignore**；模板见 `config.example.json`，复制改名即可：
+
+```json
+{
+  "storage": "sqlite",                    // 或 "mysql"
+  "jsonl_path": "data/annotations.jsonl", // 审计流水，两种模式都会写
+  "sqlite": { "db_path": "data/labeler.db" },
+  "mysql": { "host": "...", "port": 3306, "user": "...", "password": "...", "database": "myresearcher_labeler" }
+}
+```
+
+- 无 `config.json` 时默认 sqlite（历史用法完全不变）。
+- 相对路径按**配置文件所在目录**解析；`server.py`、`tools/gpt_tasks.py` 等读同一份配置，把 `config.json` 复制到哪台机器就能对哪个库操作。
+- 校验 fail-closed：未知字段、缺字段直接报错退出 2，不静默降级。
+- mysql 模式需要驱动：`pip install pymysql`（纯 Python，仅此一个依赖；sqlite 模式仍然零安装）。MySQL 端 `batch_id ≤64 字符、sample_id ≤255 字符`，超限导入会整批回滚。
+
 ## 启动
 
 ```bash
 cd MyResearcher-Labeling-app
 python3 tools/seed_demo.py        # 可选：生成 20 条虚构文本的 demo batch
 python3 server.py --port 8787     # 绑定 0.0.0.0，自动打印局域网 URL
+python3 server.py --config config.json --port 8787   # mysql 模式同理
 ```
 
-启动后同时写 `data/labeler.db`（SQLite）与 `data/annotations.jsonl`（append 流水）。
+sqlite 模式下数据写 `data/labeler.db` 与 `data/annotations.jsonl`（append 流水）；
+mysql 模式下表建在配置指定的库中（utf8mb4），jsonl 流水仍写本地。
+
+## GPT 加任务 / 拉结果（gpt_tasks）
+
+面向"本地专家（GPT）加任务 → 服务端网页标注 → 本地专家拉结果"的闭环，
+读写与服务端同一份配置：
+
+```bash
+# 加任务（与 import_batch 同一套 samples.jsonl 契约，fail-closed）
+python3 tools/gpt_tasks.py add --batch mybatch --file samples.jsonl \
+  --heads target_mode,stance --config config.json
+
+# 拉结果（jsonl 默认打印 stdout；--out 写文件；csv 同 export 列）
+python3 tools/gpt_tasks.py pull --config config.json
+python3 tools/gpt_tasks.py pull --final-only --batch mybatch --format csv --out gold.csv --config config.json
+```
+
+退出码：0 成功；1 数据/校验失败（不写库）；2 配置错误。
 
 ## 导入自己的数据
 

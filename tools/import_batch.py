@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
-"""导入 samples.jsonl → batches/samples/assignments。fail-closed：任何校验失败不写库。"""
+"""导入 samples.jsonl → batches/samples/assignments。fail-closed：任何校验失败不写库。
+
+导入逻辑在 storage.SqliteStore.import_samples；本文件保留 (db_path, ...) 旧签名，
+并输出与既有调用方（tests/seed_demo）兼容的 fail-closed 行为。
+"""
 
 import argparse
 import json
-import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
-from server import DDL, SCHEMA_PATH  # noqa: E402
+from storage import SCHEMA_PATH, SqliteStore  # noqa: E402
 
 DEFAULT_DB = PROJECT_ROOT / "data" / "labeler.db"
 REQUIRED_FIELDS = ("sample_id", "text")
@@ -72,56 +75,13 @@ def import_samples(db_path, batch_id, samples, heads, schema_version):
     unknown = [h for h in heads if h not in head_order]
     if unknown:
         fail(f"未知 head: {unknown}（可用: {head_order}）")
-    db_path = Path(db_path)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(str(db_path))
-    con.row_factory = sqlite3.Row
+    store = SqliteStore(str(db_path), None, glossary)
     try:
-        con.executescript(DDL)
-        con.execute("BEGIN IMMEDIATE")
-        existing = {r["id"] for r in con.execute("SELECT id FROM samples WHERE batch_id = ?", (batch_id,))}
-        dup = existing & {s["sample_id"] for s in samples}
-        if dup:
-            con.rollback()
-            fail(f"与库中已有 sample_id 重复: {sorted(dup)[:10]}")
-        if con.execute("SELECT 1 FROM batches WHERE id = ?", (batch_id,)).fetchone() is None:
-            con.execute(
-                "INSERT INTO batches(id, name, created_at, schema_version) VALUES(?, ?, ?, ?)",
-                (batch_id, batch_id, now_iso(), schema_version),
-            )
-        for s in samples:
-            con.execute(
-                "INSERT INTO samples(batch_id, id, title, content, metadata_json) VALUES(?, ?, ?, ?, ?)",
-                (
-                    batch_id,
-                    s["sample_id"],
-                    s["title"],
-                    s["text"],
-                    json.dumps(s["metadata"], ensure_ascii=False, sort_keys=True),
-                ),
-            )
-        for h in heads:
-            row = con.execute(
-                "SELECT MAX(position) AS m FROM assignments WHERE batch_id = ? AND head = ?",
-                (batch_id, h),
-            ).fetchone()
-            pos = (row["m"] + 1) if row["m"] is not None else 0
-            for s in samples:
-                con.execute(
-                    "INSERT INTO assignments(id, batch_id, sample_id, head, position, status)"
-                    " VALUES(?, ?, ?, ?, ?, 'pending')",
-                    (f"{batch_id}:{s['sample_id']}:{h}", batch_id, s["sample_id"], h, pos),
-                )
-                pos += 1
-        con.commit()
-    except SystemExit:
-        raise
-    except Exception:
-        con.rollback()
-        raise
+        return store.import_samples(batch_id, samples, heads, schema_version)
+    except ValueError as exc:
+        fail(str(exc))
     finally:
-        con.close()
-    return {"samples": len(samples), "assignments": len(samples) * len(heads)}
+        store.close()
 
 
 def main():

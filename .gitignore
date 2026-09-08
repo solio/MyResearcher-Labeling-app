@@ -44,6 +44,7 @@ static/*.bundle.js
 *.swo
 *~
 
-# ---- 运行时数据 / 阻塞记录 ----
+# ---- 运行时数据 / 敏感配置 / 阻塞记录 ----
 data/
+config.json
 BLOCKED.md

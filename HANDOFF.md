@@ -1,6 +1,6 @@
 # HANDOFF — MyResearcher-Labeling-app
 
-供后续集成审阅（含 GPT 集成审阅）。交付日期：2026-09-07。
+供后续集成审阅（含 GPT 集成审阅）。交付日期：2026-09-07；phase6（MySQL 适配）2026-09-08。
 
 ## 1. 项目边界（铁律执行情况）
 
@@ -8,8 +8,10 @@
   `schema/semantic-schema-calibrated-v0.2.1.json`，用于抄录 7 个 head 的
   `class_order` 与标签定义（顺序未改动，见 `schema/annotation-schema.v1.json` 的
   `note` 字段）。该仓库无任何修改。
-- 后端仅 Python 标准库（http.server / sqlite3 / json / argparse / csv / zlib /
-  struct），零 pip 依赖。前端原生 JS，零构建、零 CDN、零框架。
+- 默认后端仅 Python 标准库（http.server / sqlite3 / json / argparse / csv / zlib /
+  struct），零 pip 依赖；**mysql 模式为 owner 后续要求（phase6），需
+  `pip install pymysql`（纯 Python 驱动，唯一非标准库依赖，仅 storage=mysql 时 import），
+  sqlite 模式保持零安装**。前端原生 JS，零构建、零 CDN、零框架。
 - 无任何模型预测/预填答案展示（UI 与 API 均不含预测字段）。
 
 ## 2. 实际运行的验证命令与退出码
@@ -36,12 +38,21 @@
 | P4 | 服务恢复（约 5s 重试定时器） | 自动重试 → 队列 0、横幅消失、DB revision+1、jsonl 追加、toast"已入库" |
 | P4 | 刷新/关页重开（服务在线） | 经 `/api/resume` + localStorage 恢复原 batch/head/sample 与已选答案（demo-003 五标签恢复） |
 | P5 | `python3 -m unittest discover tests` | **Ran 15 tests … OK**，EXIT=0（幂等 upsert、round-trip jsonl+csv、fail-closed ×5、resume 生命周期、静态/参数校验/glossary） |
-| git | 每 phase commit | `131d5ee` phase1, `10ae9f1` phase2, `f34770e` phase3, `71003a6` phase4, phase5=本提交 |
+| P6 | `python3 -m unittest discover tests` | **Ran 28 tests … OK (skipped=1)**，EXIT=0（原 15 个不改一行仍绿；新增 12 配置/工具用例 + 1 opt-in MySQL） |
+| P6 | `MR_LABELER_TEST_MYSQL='{…13306…}' python3 -m unittest tests.test_config_and_tools.TestMysqlStore` | **Ran 2 tests … OK**，EXIT=0（docker mysql:8.0.46：utf8mb4 中文往返、幂等 upsert、fail-closed 回滚、resume 生命周期、export 过滤） |
+| P6 | `python3 tools/gpt_tasks.py add --batch e2e --file data/e2e_samples.jsonl --heads stance,target_mode --config data/config.test.json` | EXIT=0，storage=mysql，4 assignments |
+| P6 | curl（8788，mysql 模式）`/api/batches` `/api/resume` POST `/api/annotations` | 200；BULL final revision=1；非法标签 400；resume 随 final/草稿正确移动 |
+| P6 | `python3 tools/gpt_tasks.py pull --config …`（jsonl / `--final-only --format csv`） | EXIT=0；jsonl 4 行（中文 metadata 经 utf8mb4 无损）；csv 仅 final 行 |
+| P6 | `python3 server.py --port 8789`（无 config.json，sqlite 默认） | EXIT=0，`/api/batches` 返回 demo batch——历史用法零变化 |
+| P6 | `git check-ignore config.json data/config.test.json` | 均命中 .gitignore（凭据不入库） |
+| git | 每 phase commit | `131d5ee` phase1, `10ae9f1` phase2, `f34770e` phase3, `71003a6` phase4, `7ad7518` phase5, `00d61c3` docs, phase6=本提交 |
 
 ## 3. 文件清单
 
 ```
-server.py                     唯一后端入口（DDL、API、静态服务、Store）
+server.py                     唯一后端入口（API、静态服务；存储委托 storage.py，--config）
+storage.py                    存储层：load_config（fail-closed 校验）+ SqliteStore/MysqlStore + create_store
+config.example.json           配置模板（提交）；config.json 为真实凭据（gitignore）
 static/index.html             单页骨架（开始屏 / 主标注屏 / sheet / toast / 横幅）
 static/style.css              100dvh 四段布局、bottom sheet、按钮 ≥44px
 static/app.js                 会话、标注流、保存链路（队列+重试）、resume、sheet
@@ -49,10 +60,12 @@ static/manifest.json          PWA（可添加到主屏幕）
 static/icon-192.png           stdlib（zlib/struct）生成的占位 PNG
 static/icon-512.png           同上
 schema/annotation-schema.v1.json  owner 可编辑释义：head 问题句/定义/该选不该选/正例/易混淆 + 标签中文名/释义 + 不变量
-tools/import_batch.py         导入 samples.jsonl（fail-closed）
-tools/export_annotations.py   导出 jsonl/csv（--final-only）
+tools/import_batch.py         导入 samples.jsonl（fail-closed；委托 SqliteStore，保留 --db 旧用法）
+tools/export_annotations.py   导出 jsonl/csv（--final-only；委托 SqliteStore，保留 --db 旧用法）
+tools/gpt_tasks.py            GPT 专用：add 加任务 / pull 拉结果（--config，sqlite/mysql 通用）
 tools/seed_demo.py            20 条虚构文本 demo
-tests/test_server.py          stdlib unittest ×15
+tests/test_server.py          stdlib unittest ×15（HTTP/存储行为，后端无关）
+tests/test_config_and_tools.py  配置校验 ×9 + gpt_tasks 子进程往返 ×4 + MySQL opt-in ×2
 README.md                     使用说明 + 手动测试清单
 data/labeler.db               运行时创建（gitignore）
 data/annotations.jsonl        每次保存 append 一行（gitignore）
@@ -119,6 +132,10 @@ data/annotations.jsonl        每次保存 append 一行（gitignore）
 7. HEAD 释义编辑（annotation-schema.v1.json）需重启 server.py 生效；已导入 assignment 的
    head/标签词表不会自动迁移（换 schema 版本需显式新建 batch）。
 8. 本机 localStorage 队列详情缓存上限：详情 200 条（超出淘汰最早），列表按 batch+head 一份。
+9. mysql 模式：单连接 + 进程内锁串行（与 sqlite 同一并发假设：单人标注）；长连接经
+   `ping(reconnect=True)` 自愈；多进程同时写依赖 MySQL 事务，无跨进程优先级仲裁。
+10. `config.json` 相对路径按**配置文件所在目录**解析；复制配置到其他机器时需保持目录结构
+    （或改绝对路径）。凭据明文存于 config.json——已 gitignore，但不得随仓库/截图外传。
 
 ## 8. 开放集成问题（待 owner 拍板）
 
