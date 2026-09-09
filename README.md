@@ -49,6 +49,9 @@ mysql 模式下表建在配置指定的库中（utf8mb4），jsonl 流水仍写�
 python3 tools/gpt_tasks.py add --batch mybatch --file samples.jsonl \
   --heads target_mode,stance --config data/config-gpt.json
 
+# 查完成度（判断批次是否填完；total=任务数 done=final或终态 finals=is_final=1）
+python3 tools/gpt_tasks.py status --batch mybatch --config data/config-gpt.json
+
 # 拉结果（jsonl 默认打印 stdout；--out 写文件；csv 同 export 列）
 python3 tools/gpt_tasks.py pull --config data/config-gpt.json
 python3 tools/gpt_tasks.py pull --final-only --batch mybatch --format csv --out gold.csv --config data/config-gpt.json

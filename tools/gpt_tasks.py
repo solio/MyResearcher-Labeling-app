@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""GPT 专用任务工具：add（导入任务）/ pull（拉取标注结果）。
+"""GPT 专用任务工具：add（导入任务）/ pull（拉取标注结果）/ status（批次完成度）。
 
 读取与服务端完全相同的配置文件（--config，默认项目根 config.json）：
 本地 GPT 与服务器各放一份相同配置，即可对同一个 sqlite/mysql 库操作，
 实现「本地专家加任务 → 服务端网页标注 → 本地专家拉结果」的闭环。
 
-退出码：0 成功；1 数据/校验失败（fail-closed，未写入任何数据）；2 配置错误。
+退出码：0 成功；1 数据/校验失败（fail-closed，未写入任何数据；status 批次不存在也走 1）；2 配置错误。
 """
 
 import argparse
@@ -17,7 +17,9 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "tools"))
-from storage import SCHEMA_PATH, ConfigError, create_store, load_config  # noqa: E402
+from storage import (  # noqa: E402
+    SCHEMA_PATH, TERMINAL_DISPOSITIONS, ConfigError, create_store, load_config,
+)
 from import_batch import parse_samples  # noqa: E402
 
 CSV_COLUMNS = [
@@ -106,6 +108,26 @@ def cmd_pull(args):
     )
 
 
+def cmd_status(args):
+    cfg, _, store = _load_env(args.config)
+    try:
+        rows = list(store.export_rows(final_only=False, batch_id=args.batch))
+    finally:
+        store.close()
+    if not rows:
+        print(f"[gpt_tasks] 批次不存在或没有任何任务: {args.batch}", file=sys.stderr)
+        sys.exit(1)
+    done = sum(1 for r in rows if r["is_final"] or r["disposition"] in TERMINAL_DISPOSITIONS)
+    finals = sum(1 for r in rows if r["is_final"])
+    print(json.dumps({
+        "batch": args.batch,
+        "total": len(rows),
+        "done": done,
+        "finals": finals,
+        "complete": done >= len(rows),
+    }, ensure_ascii=False))
+
+
 def main():
     ap = argparse.ArgumentParser(description="GPT 任务工具：add 导入任务 / pull 拉取结果")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -123,9 +145,15 @@ def main():
     p_pull.add_argument("--out", default=None, help="写入文件（默认打印到 stdout）")
     p_pull.add_argument("--config", default=None, help="配置文件路径（默认项目根 config.json）")
 
+    p_status = sub.add_parser("status", help="查询批次完成度（JSON：total/done/finals/complete）")
+    p_status.add_argument("--batch", required=True, help="batch id")
+    p_status.add_argument("--config", default=None, help="配置文件路径（默认项目根 config.json）")
+
     args = ap.parse_args()
     if args.cmd == "add":
         cmd_add(args)
+    elif args.cmd == "status":
+        cmd_status(args)
     else:
         cmd_pull(args)
 

@@ -161,6 +161,31 @@ class TestGptTasks(unittest.TestCase):
         self.assertTrue(Path(self.out_path).is_file())
         self.assertIn("OK pull rows=4", r4.stderr)
 
+    def test_status_reports_completion(self):
+        r = self.run_tool("add", "--batch", "gp", "--file", self.samples_path,
+                          "--heads", "stance", "--config", self.cfg_path)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        # 未标注：complete=false
+        r1 = self.run_tool("status", "--batch", "gp", "--config", self.cfg_path)
+        self.assertEqual(r1.returncode, 0, r1.stderr)
+        s1 = json.loads(r1.stdout)
+        self.assertEqual((s1["total"], s1["done"], s1["finals"], s1["complete"]), (2, 0, 0, False))
+        # 标完全部（1 final + 1 终态处置）：complete=true
+        store = SqliteStore(str(Path(self._tmp.name) / "data" / "labeler.db"), None,
+                            json.loads(SCHEMA_PATH.read_text(encoding="utf-8")))
+        try:
+            store.upsert_annotation("gp:g-1:stance", "BULL", None, True)
+            store.upsert_annotation("gp:g-2:stance", None, "跳过", False)
+        finally:
+            store.close()
+        r2 = self.run_tool("status", "--batch", "gp", "--config", self.cfg_path)
+        s2 = json.loads(r2.stdout)
+        self.assertEqual((s2["done"], s2["finals"], s2["complete"]), (2, 1, True))
+        # 批次不存在 → exit 1
+        r3 = self.run_tool("status", "--batch", "no_such", "--config", self.cfg_path)
+        self.assertEqual(r3.returncode, 1)
+        self.assertIn("批次不存在", r3.stderr)
+
     def test_add_fail_closed_unknown_head(self):
         r = self.run_tool("add", "--batch", "gp", "--file", self.samples_path,
                           "--heads", "not_a_head", "--config", self.cfg_path)

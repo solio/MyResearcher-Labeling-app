@@ -27,6 +27,7 @@ const state = {
   batches: [],
   batchesError: null,
   headCounts: {},      // headId -> {total, left}（当前选中 batch 的未完成量）
+  completionShown: {}, // batchId -> true（完成页每 batch 每会话只弹一次）
   assignments: [],
   idx: 0,
   details: new Map(),  // assignment_id -> {sample, glossary, invariants}
@@ -154,6 +155,10 @@ async function flushQueue() {
         row.status = rec.is_final ? "completed" : row.status;
       }
       toast("已入库");
+      // 当前 head 全部完成 → 查一次批次完成度（离线补传的场景也会在这里触发）
+      if (state.assignments.length && state.assignments.every(isDone)) {
+        maybeShowBatchComplete(state.session && state.session.batchId);
+      }
     }
   } finally {
     flushBusy = false;
@@ -227,6 +232,11 @@ function headSubText(batchId, headId) {
   return c && c.total ? `剩 ${c.left} / ${c.total}` : "";
 }
 
+function batchSubText(b) {
+  const done = b.done || 0;
+  return done >= b.total ? `已完成 ✓ ${done} / ${b.total}` : `完成 ${done} / ${b.total}`;
+}
+
 function renderStart() {
   $("#screen-main").classList.add("hidden");
   $("#screen-start").classList.remove("hidden");
@@ -240,7 +250,7 @@ function renderStart() {
   for (const b of state.batches) {
     const btn = document.createElement("button");
     btn.className = "pick-item";
-    btn.innerHTML = `<span>${b.id}</span><span class="sub">完成 ${b.done || 0} / ${b.total}</span>`;
+    btn.innerHTML = `<span>${b.id}</span><span class="sub">${batchSubText(b)}</span>`;
     if (state.session && state.session.batchId === b.id) btn.classList.add("selected");
     btn.addEventListener("click", () => {
       state.session = { batchId: b.id, head: state.session && state.session.batchId === b.id ? state.session.head : null };
@@ -330,6 +340,7 @@ async function enterMain(batchId, head, jumpToId) {
     toast("该 batch/head 没有任何任务", true);
     return false;
   }
+  if (state.assignments.every(isDone)) maybeShowBatchComplete(batchId);
   state.idx = 0;
   if (jumpToId) {
     const i = state.assignments.findIndex((a) => a.id === jumpToId);
@@ -593,6 +604,32 @@ function showSwitchSheet() {
     renderStart();
     refreshStartData();
   });
+}
+
+/* ---------- 批次完成页 ---------- */
+
+async function maybeShowBatchComplete(batchId) {
+  if (!batchId || state.completionShown[batchId]) return;
+  try {
+    const bs = await api("/api/batches");
+    state.batches = bs;
+    const b = bs.find((x) => x.id === batchId);
+    if (b && b.total > 0 && (b.done || 0) >= b.total) {
+      state.completionShown[batchId] = true;
+      const html =
+        '<h3 class="sheet-title">本批次已全部填完</h3>' +
+        `<p class="sheet-sub">${esc(batchId)} · ${b.done} / ${b.total}</p>` +
+        '<p class="gloss-def">数据已在服务端，本机（GPT）可随时拉取结果。</p>' +
+        '<button id="btn-complete-back" class="ghost-btn" style="width:100%;height:44px;margin-top:8px;">返回选择页</button>';
+      openSheet(html);
+      $("#btn-complete-back").addEventListener("click", () => {
+        closeSheet();
+        state.session = { batchId: state.session.batchId, head: null };
+        renderStart();
+        refreshStartData();
+      });
+    }
+  } catch (e) { /* 离线不弹，等下次触发 */ }
 }
 
 /* ---------- 启动 / resume ---------- */
