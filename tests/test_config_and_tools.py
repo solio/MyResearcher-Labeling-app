@@ -202,6 +202,73 @@ class TestGptTasks(unittest.TestCase):
         self.assertEqual(again.returncode, 1)
         self.assertIn("FAIL-CLOSED", again.stderr)
 
+    def test_sparse_assignment_file_creates_only_requested_assignments(self):
+        sparse_path = write(self._tmp.name, "assignments.jsonl", "\n".join([
+            json.dumps({"sample_id": "s-1", "text": "只标 stance", "heads": ["stance"]}, ensure_ascii=False),
+            json.dumps({
+                "sample_id": "s-2", "text": "标 action 和 reasoning", "title": "标题",
+                "metadata": {"source": "fixture"}, "heads": ["action_tendency", "reasoning_tags"],
+            }, ensure_ascii=False),
+        ]) + "\n")
+        r = self.run_tool(
+            "add", "--batch", "sparse", "--assignment-file", sparse_path,
+            "--config", self.cfg_path,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("samples=2", r.stdout)
+        self.assertIn("heads=3", r.stdout)
+        self.assertIn("assignments=3", r.stdout)
+
+        import sqlite3
+        db_path = Path(self._tmp.name) / "data" / "labeler.db"
+        con = sqlite3.connect(db_path)
+        try:
+            rows = con.execute(
+                "SELECT sample_id, head FROM assignments WHERE batch_id = ? ORDER BY sample_id, head",
+                ("sparse",),
+            ).fetchall()
+            self.assertEqual(rows, [
+                ("s-1", "stance"),
+                ("s-2", "action_tendency"),
+                ("s-2", "reasoning_tags"),
+            ])
+            sample = con.execute(
+                "SELECT title, metadata_json FROM samples WHERE batch_id = ? AND id = ?",
+                ("sparse", "s-2"),
+            ).fetchone()
+            self.assertEqual(sample[0], "标题")
+            self.assertEqual(json.loads(sample[1]), {"source": "fixture"})
+        finally:
+            con.close()
+
+    def test_sparse_assignment_file_rejects_invalid_heads_before_writing(self):
+        invalid_records = {
+            "unknown": {"sample_id": "bad", "text": "文本", "heads": ["not_a_head"]},
+            "duplicate": {"sample_id": "bad", "text": "文本", "heads": ["stance", "stance"]},
+            "empty": {"sample_id": "bad", "text": "文本", "heads": []},
+        }
+        for label, record in invalid_records.items():
+            path = write(self._tmp.name, f"{label}.jsonl", json.dumps(record, ensure_ascii=False) + "\n")
+            r = self.run_tool(
+                "add", "--batch", f"bad-{label}", "--assignment-file", path,
+                "--config", self.cfg_path,
+            )
+            self.assertEqual(r.returncode, 1, (label, r.stderr))
+            self.assertIn("FAIL-CLOSED", r.stderr)
+            self.assertFalse((Path(self._tmp.name) / "data" / "labeler.db").exists())
+
+    def test_sparse_assignment_file_cannot_be_combined_with_heads(self):
+        path = write(self._tmp.name, "with_heads.jsonl", json.dumps({
+            "sample_id": "bad", "text": "文本", "heads": ["stance"],
+        }, ensure_ascii=False) + "\n")
+        r = self.run_tool(
+            "add", "--batch", "bad-both", "--assignment-file", path,
+            "--heads", "stance", "--config", self.cfg_path,
+        )
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("不能与 --heads 同时使用", r.stderr)
+        self.assertFalse((Path(self._tmp.name) / "data" / "labeler.db").exists())
+
     def test_bad_config_exits_2(self):
         bad = write(self._tmp.name, "bad.json", {"storage": "mysql", "mysql": {}})
         r = self.run_tool("pull", "--config", bad)

@@ -306,6 +306,36 @@ class BaseStore:
                 raise ValueError(f"文件内 sample_id 重复: {s['sample_id']}")
             sids.add(s["sample_id"])
 
+    def _validate_sparse_import(self, batch_id, assignments):
+        if not batch_id or not isinstance(batch_id, str):
+            raise ValueError("batch_id 必须是非空字符串")
+        if not assignments:
+            raise ValueError("assignments 不能为空")
+        sids = set()
+        for s in assignments:
+            if not isinstance(s, dict):
+                raise ValueError(f"assignment 必须是对象: {s!r}")
+            sample_id = s.get("sample_id")
+            text = s.get("text")
+            if not isinstance(sample_id, str) or not sample_id.strip():
+                raise ValueError(f"sample 缺少 sample_id: {s!r}")
+            if not isinstance(text, str) or not text.strip():
+                raise ValueError(f"sample 缺少 text: {s!r}")
+            sample_id = sample_id.strip()
+            if sample_id in sids:
+                raise ValueError(f"文件内 sample_id 重复: {sample_id}")
+            sids.add(sample_id)
+            heads = s.get("heads")
+            if not isinstance(heads, list) or not heads:
+                raise ValueError(f"sample {sample_id} 的 heads 必须是非空数组")
+            if any(not isinstance(h, str) or not h.strip() for h in heads):
+                raise ValueError(f"sample {sample_id} 的 heads 必须全部是非空字符串")
+            if len(set(heads)) != len(heads):
+                raise ValueError(f"sample {sample_id} 的 heads 存在重复")
+            unknown = [h for h in heads if h not in self.head_order()]
+            if unknown:
+                raise ValueError(f"sample {sample_id} 未知 head: {unknown}（可用: {self.head_order()}）")
+
 
 class SqliteStore(BaseStore):
     """sqlite3 + annotations.jsonl 的统一存取，线程安全（单连接 + RLock）。"""
@@ -493,6 +523,58 @@ class SqliteStore(BaseStore):
                 self.conn.rollback()
                 raise
         return {"samples": len(samples), "assignments": len(samples) * len(heads)}
+
+    def import_sparse_samples(self, batch_id, assignments, schema_version):
+        """原子导入逐样本 heads；未指定的 head 不生成 assignment。"""
+        self._validate_sparse_import(batch_id, assignments)
+        with self.lock:
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+                existing = {r["id"] for r in self.conn.execute(
+                    "SELECT id FROM samples WHERE batch_id = ?", (batch_id,))}
+                dup = existing & {s["sample_id"] for s in assignments}
+                if dup:
+                    raise ValueError(f"与库中已有 sample_id 重复: {sorted(dup)[:10]}")
+                if self.conn.execute("SELECT 1 FROM batches WHERE id = ?", (batch_id,)).fetchone() is None:
+                    self.conn.execute(
+                        "INSERT INTO batches(id, name, created_at, schema_version) VALUES(?, ?, ?, ?)",
+                        (batch_id, batch_id, now_iso(), schema_version),
+                    )
+                for s in assignments:
+                    self.conn.execute(
+                        "INSERT INTO samples(batch_id, id, title, content, metadata_json) VALUES(?, ?, ?, ?, ?)",
+                        (
+                            batch_id,
+                            s["sample_id"],
+                            s.get("title"),
+                            s["text"],
+                            json.dumps(s.get("metadata") or {}, ensure_ascii=False, sort_keys=True),
+                        ),
+                    )
+                heads = list(dict.fromkeys(h for s in assignments for h in s["heads"]))
+                next_positions = {}
+                for h in heads:
+                    row = self.conn.execute(
+                        "SELECT MAX(position) AS m FROM assignments WHERE batch_id = ? AND head = ?",
+                        (batch_id, h),
+                    ).fetchone()
+                    next_positions[h] = (row["m"] + 1) if row["m"] is not None else 0
+                for s in assignments:
+                    for h in s["heads"]:
+                        self.conn.execute(
+                            "INSERT INTO assignments(id, batch_id, sample_id, head, position, status)"
+                            " VALUES(?, ?, ?, ?, ?, 'pending')",
+                            (f"{batch_id}:{s['sample_id']}:{h}", batch_id, s["sample_id"], h, next_positions[h]),
+                        )
+                        next_positions[h] += 1
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+        return {
+            "samples": len(assignments),
+            "assignments": sum(len(s["heads"]) for s in assignments),
+        }
 
     def export_rows(self, final_only=False, batch_id=None):
         con = sqlite3.connect(self.db_path)
@@ -784,6 +866,70 @@ class MysqlStore(BaseStore):
             finally:
                 cur.close()
         return {"samples": len(samples), "assignments": len(samples) * len(heads)}
+
+    def import_sparse_samples(self, batch_id, assignments, schema_version):
+        """原子导入逐样本 heads；未指定的 head 不生成 assignment。"""
+        self._validate_sparse_import(batch_id, assignments)
+        with self.lock:
+            self._ping()
+            cur = self.conn.cursor()
+            try:
+                cur.execute("START TRANSACTION")
+                cur.execute("SELECT id FROM samples WHERE batch_id = %s", (batch_id,))
+                existing = {r["id"] for r in cur.fetchall()}
+                dup = existing & {s["sample_id"] for s in assignments}
+                if dup:
+                    raise ValueError(f"与库中已有 sample_id 重复: {sorted(dup)[:10]}")
+                cur.execute("SELECT 1 FROM batches WHERE id = %s", (batch_id,))
+                if cur.fetchone() is None:
+                    cur.execute(
+                        "INSERT INTO batches(id, name, created_at, schema_version) VALUES(%s, %s, %s, %s)",
+                        (batch_id, batch_id, now_iso(), schema_version),
+                    )
+                for s in assignments:
+                    cur.execute(
+                        "INSERT INTO samples(batch_id, id, title, content, metadata_json) VALUES(%s, %s, %s, %s, %s)",
+                        (
+                            batch_id,
+                            s["sample_id"],
+                            s.get("title"),
+                            s["text"],
+                            json.dumps(s.get("metadata") or {}, ensure_ascii=False, sort_keys=True),
+                        ),
+                    )
+                heads = list(dict.fromkeys(h for s in assignments for h in s["heads"]))
+                next_positions = {}
+                for h in heads:
+                    cur.execute(
+                        "SELECT MAX(position) AS m FROM assignments WHERE batch_id = %s AND head = %s",
+                        (batch_id, h),
+                    )
+                    m = cur.fetchone()["m"]
+                    next_positions[h] = (m + 1) if m is not None else 0
+                for s in assignments:
+                    for h in s["heads"]:
+                        cur.execute(
+                            "INSERT INTO assignments(id, batch_id, sample_id, head, position, status)"
+                            " VALUES(%s, %s, %s, %s, %s, 'pending')",
+                            (
+                                f"{batch_id}:{s['sample_id']}:{h}",
+                                batch_id,
+                                s["sample_id"],
+                                h,
+                                next_positions[h],
+                            ),
+                        )
+                        next_positions[h] += 1
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+            finally:
+                cur.close()
+        return {
+            "samples": len(assignments),
+            "assignments": sum(len(s["heads"]) for s in assignments),
+        }
 
     def export_rows(self, final_only=False, batch_id=None):
         with self.lock:

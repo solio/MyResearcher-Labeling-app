@@ -49,6 +49,10 @@ mysql 模式下表建在配置指定的库中（utf8mb4），jsonl 流水仍写�
 python3 tools/gpt_tasks.py add --batch mybatch --file samples.jsonl \
   --heads target_mode,stance --config data/config-gpt.json
 
+# 稀疏指定：每行的 heads 独立决定该 sample 生成哪些任务
+python3 tools/gpt_tasks.py add --batch sparse --assignment-file assignments.jsonl --config data/config-gpt.json
+# assignments.jsonl 示例：{"sample_id":"a-001","text":"正文","heads":["stance"]}
+
 # 查完成度（判断批次是否填完；total=任务数 done=final或终态 finals=is_final=1）
 python3 tools/gpt_tasks.py status --batch mybatch --config data/config-gpt.json
 

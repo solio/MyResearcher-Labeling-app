@@ -27,6 +27,8 @@ CSV_COLUMNS = [
     "schema_version", "updated_at", "metadata",
 ]
 
+ASSIGNMENT_ALLOWED_FIELDS = {"sample_id", "text", "title", "metadata", "heads"}
+
 
 def die(msg):
     print(f"[gpt_tasks] FAIL-CLOSED: {msg}", file=sys.stderr)
@@ -48,21 +50,101 @@ def _load_env(config_path):
     return cfg, glossary, store
 
 
+def parse_assignment_file(path, head_order):
+    """读取逐样本 head 指定文件，任何错误都在写库前 fail-closed。"""
+    p = Path(path)
+    if not p.is_file():
+        die(f"文件不存在: {p}")
+    assignments, seen = [], set()
+    with p.open(encoding="utf-8") as f:
+        for lineno, raw in enumerate(f, 1):
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError as exc:
+                die(f"第 {lineno} 行不是合法 JSON: {exc}")
+            if not isinstance(rec, dict):
+                die(f"第 {lineno} 行必须是 JSON 对象")
+            unknown_fields = sorted(set(rec) - ASSIGNMENT_ALLOWED_FIELDS)
+            if unknown_fields:
+                die(
+                    f"第 {lineno} 行存在未知字段: {unknown_fields}"
+                    f"（允许: {sorted(ASSIGNMENT_ALLOWED_FIELDS)}）"
+                )
+            if not (isinstance(rec.get("sample_id"), str) and rec["sample_id"].strip()):
+                die(f"第 {lineno} 行 sample_id 缺失或为空")
+            if not (isinstance(rec.get("text"), str) and rec["text"].strip()):
+                die(f"第 {lineno} 行 text 缺失或为空")
+            sid = rec["sample_id"].strip()
+            if sid in seen:
+                die(f"第 {lineno} 行 sample_id 重复: {sid}")
+            seen.add(sid)
+
+            heads = rec.get("heads")
+            if not isinstance(heads, list) or not heads:
+                die(f"第 {lineno} 行 heads 必须是非空数组")
+            if any(not isinstance(h, str) or not h.strip() for h in heads):
+                die(f"第 {lineno} 行 heads 必须全部是非空字符串")
+            heads = [h.strip() for h in heads]
+            if len(set(heads)) != len(heads):
+                die(f"第 {lineno} 行 heads 存在重复")
+            unknown_heads = [h for h in heads if h not in head_order]
+            if unknown_heads:
+                die(f"第 {lineno} 行未知 head: {unknown_heads}（可用: {head_order}）")
+
+            title = rec.get("title")
+            if title is not None and not isinstance(title, str):
+                die(f"第 {lineno} 行 title 必须是字符串")
+            metadata = rec.get("metadata")
+            if metadata is None:
+                metadata = {}
+            if not isinstance(metadata, dict):
+                die(f"第 {lineno} 行 metadata 必须是对象")
+            assignments.append({
+                "sample_id": sid,
+                "text": rec["text"],
+                "title": title,
+                "metadata": metadata,
+                "heads": heads,
+            })
+    if not assignments:
+        die("文件没有任何有效行")
+    return assignments
+
+
 def cmd_add(args):
     glossary = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     head_order = glossary.get("head_order", [])
-    heads = [h.strip() for h in args.heads.split(",") if h.strip()]
-    if not heads:
-        die("--heads 不能为空")
-    if len(set(heads)) != len(heads):
-        die("--heads 存在重复")
-    unknown = [h for h in heads if h not in head_order]
-    if unknown:
-        die(f"未知 head: {unknown}（可用: {head_order}）")
-    samples = parse_samples(args.file)
+    if bool(args.file) == bool(args.assignment_file):
+        die("必须且只能指定 --file 或 --assignment-file")
+    if args.assignment_file:
+        if args.heads is not None:
+            die("--assignment-file 不能与 --heads 同时使用")
+        assignments = parse_assignment_file(args.assignment_file, head_order)
+        samples = assignments
+        heads = sorted({h for s in assignments for h in s["heads"]}, key=head_order.index)
+        import_sparse = True
+    else:
+        if args.heads is None:
+            die("--file 模式必须指定 --heads")
+        heads = [h.strip() for h in args.heads.split(",") if h.strip()]
+        if not heads:
+            die("--heads 不能为空")
+        if len(set(heads)) != len(heads):
+            die("--heads 存在重复")
+        unknown = [h for h in heads if h not in head_order]
+        if unknown:
+            die(f"未知 head: {unknown}（可用: {head_order}）")
+        samples = parse_samples(args.file)
+        import_sparse = False
     cfg, _, store = _load_env(args.config)
     try:
-        stats = store.import_samples(args.batch, samples, heads, glossary.get("schema_version"))
+        if import_sparse:
+            stats = store.import_sparse_samples(args.batch, samples, glossary.get("schema_version"))
+        else:
+            stats = store.import_samples(args.batch, samples, heads, glossary.get("schema_version"))
     except ValueError as exc:
         die(f"导入被拒绝（未写入任何数据）: {exc}")
     finally:
@@ -134,8 +216,12 @@ def main():
 
     p_add = sub.add_parser("add", help="导入 samples.jsonl 生成标注任务")
     p_add.add_argument("--batch", required=True, help="batch id（同时作为显示名）")
-    p_add.add_argument("--file", required=True, help="samples.jsonl 路径")
-    p_add.add_argument("--heads", required=True, help="逗号分隔的 head 列表，如 target_mode,stance")
+    p_add.add_argument("--file", default=None, help="samples.jsonl 路径（与 --assignment-file 二选一）")
+    p_add.add_argument(
+        "--assignment-file", default=None,
+        help="逐行指定 heads 的 JSONL 路径（与 --file 二选一；不可同时传 --heads）",
+    )
+    p_add.add_argument("--heads", default=None, help="逗号分隔的 head 列表，如 target_mode,stance（--file 模式）")
     p_add.add_argument("--config", default=None, help="配置文件路径（默认项目根 config.json）")
 
     p_pull = sub.add_parser("pull", help="拉取标注结果（jsonl/csv）")
