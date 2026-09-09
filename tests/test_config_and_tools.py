@@ -276,6 +276,59 @@ class TestGptTasks(unittest.TestCase):
         self.assertIn("配置错误", r.stderr)
 
 
+class TestSqliteLegacyMigration(unittest.TestCase):
+    """老版本（batches 无 archived_at 列）的库，打开时应自动补列且归档功能可用。"""
+
+    LEGACY_DDL = """
+    CREATE TABLE IF NOT EXISTS batches(id TEXT PRIMARY KEY, name TEXT, created_at TEXT, schema_version TEXT);
+    CREATE TABLE IF NOT EXISTS samples(batch_id TEXT, id TEXT, title TEXT, content TEXT,
+                                       metadata_json TEXT, PRIMARY KEY(batch_id, id));
+    CREATE TABLE IF NOT EXISTS assignments(id TEXT PRIMARY KEY, batch_id TEXT, sample_id TEXT,
+                                           head TEXT, position INTEGER, status TEXT DEFAULT 'pending');
+    CREATE TABLE IF NOT EXISTS annotations(assignment_id TEXT PRIMARY KEY, answer_json TEXT,
+                                           disposition TEXT, is_final INTEGER, revision INTEGER, updated_at TEXT);
+    """
+
+    def test_legacy_db_gets_archived_at_and_archive_works(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "legacy.db"
+            con = sqlite3.connect(str(db))
+            try:
+                con.executescript(self.LEGACY_DDL)
+                con.execute("INSERT INTO batches VALUES('lg', 'legacy', '2026-01-01T00:00:00Z', 'x')")
+                con.execute("INSERT INTO samples VALUES('lg', 's-1', NULL, '正文', '{}')")
+                con.execute("INSERT INTO assignments VALUES('lg:s-1:stance', 'lg', 's-1', 'stance', 0, 'pending')")
+                con.commit()
+            finally:
+                con.close()
+
+            glossary = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+            store = SqliteStore(str(db), None, glossary)
+            try:
+                self.assertFalse(store.is_batch_archived("lg"))
+                ts = store.archive_batch("lg")
+                self.assertTrue(ts)
+                self.assertTrue(store.is_batch_archived("lg"))
+                self.assertEqual(store.list_batches(), [])
+                self.assertEqual(store.get_resume()["batch_id"], None)
+                with self.assertRaises(ValueError):
+                    store.upsert_annotation("lg:s-1:stance", "BULL", None, False)
+                with self.assertRaises(ValueError):
+                    store.archive_batch("lg")
+                with self.assertRaises(KeyError):
+                    store.archive_batch("no_such")
+            finally:
+                store.close()
+
+            # 重开：迁移幂等（不重复加列）、归档状态保留
+            store2 = SqliteStore(str(db), None, glossary)
+            try:
+                self.assertTrue(store2.is_batch_archived("lg"))
+            finally:
+                store2.close()
+
+
 class TestMysqlStore(unittest.TestCase):
     """opt-in：MR_LABELER_TEST_MYSQL='{"host":"127.0.0.1","port":13306,"user":"labeler",
     "password":"...","database":"myresearcher_labeler"}' 时才跑。"""
@@ -356,6 +409,28 @@ class TestMysqlStore(unittest.TestCase):
         try:
             cur.execute("SELECT COUNT(*) AS c FROM annotations")
             self.assertEqual(cur.fetchone()["c"], 4)
+        finally:
+            cur.close()
+
+    def test_archive_batch_hides_and_blocks(self):
+        batch = "mt-arch"
+        samples = [{"sample_id": "a-1", "text": "归档文本", "title": None, "metadata": {}}]
+        self.store.import_samples(batch, samples, ["stance"], SCHEMA_VERSION)
+        ts = self.store.archive_batch(batch)
+        self.assertTrue(ts)
+        self.assertTrue(self.store.is_batch_archived(batch))
+        self.assertEqual([b["id"] for b in self.store.list_batches() if b["id"] == batch], [])
+        with self.assertRaises(ValueError):
+            self.store.upsert_annotation("mt-arch:a-1:stance", "BULL", None, False)
+        with self.assertRaises(ValueError):
+            self.store.archive_batch(batch)
+        # 自清理
+        cur = self.store.conn.cursor()
+        try:
+            cur.execute("DELETE FROM assignments WHERE batch_id = 'mt-arch'")
+            cur.execute("DELETE FROM samples WHERE batch_id = 'mt-arch'")
+            cur.execute("DELETE FROM batches WHERE id = 'mt-arch'")
+            self.store.conn.commit()
         finally:
             cur.close()
 

@@ -34,7 +34,8 @@ CREATE TABLE IF NOT EXISTS batches(
   id TEXT PRIMARY KEY,
   name TEXT,
   created_at TEXT,
-  schema_version TEXT
+  schema_version TEXT,
+  archived_at TEXT
 );
 CREATE TABLE IF NOT EXISTS samples(
   batch_id TEXT,
@@ -69,7 +70,8 @@ MYSQL_DDL = (
   id VARCHAR(64) PRIMARY KEY,
   name VARCHAR(255),
   created_at VARCHAR(32),
-  schema_version VARCHAR(64)
+  schema_version VARCHAR(64),
+  archived_at VARCHAR(32)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
     """CREATE TABLE IF NOT EXISTS samples(
   batch_id VARCHAR(64),
@@ -349,6 +351,10 @@ class SqliteStore(BaseStore):
         self.conn.execute("PRAGMA journal_mode=WAL")
         with self.lock:
             self.conn.executescript(SQLITE_DDL)
+            # 存量库迁移：老版本的 batches 表没有 archived_at 列
+            cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(batches)").fetchall()}
+            if "archived_at" not in cols:
+                self.conn.execute("ALTER TABLE batches ADD COLUMN archived_at TEXT")
             self.conn.commit()
 
     def close(self):
@@ -366,17 +372,41 @@ class SqliteStore(BaseStore):
                    FROM batches b
                    LEFT JOIN assignments a ON a.batch_id = b.id
                    LEFT JOIN annotations n ON n.assignment_id = a.id
+                   WHERE b.archived_at IS NULL
                    GROUP BY b.id
                    ORDER BY b.created_at DESC, b.id""",
                 TERMINAL_DISPOSITIONS,
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def is_batch_archived(self, batch_id):
+        with self.lock:
+            row = self.conn.execute(
+                "SELECT archived_at FROM batches WHERE id = ?", (batch_id,)
+            ).fetchone()
+        return bool(row and row["archived_at"])
+
+    def archive_batch(self, batch_id):
+        """标记归档（数据不动，列表隐藏、禁止再标注）。返回 archived_at。"""
+        with self.lock:
+            row = self.conn.execute(
+                "SELECT id, archived_at FROM batches WHERE id = ?", (batch_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(batch_id)
+            if row["archived_at"]:
+                raise ValueError("批次已归档")
+            ts = now_iso()
+            self.conn.execute("UPDATE batches SET archived_at = ? WHERE id = ?", (ts, batch_id))
+            self.conn.commit()
+        return ts
+
     def get_resume(self):
         with self.lock:
             row = self.conn.execute(
                 """SELECT a.batch_id, a.id
                    FROM assignments a
+                   JOIN batches b ON b.id = a.batch_id AND b.archived_at IS NULL
                    LEFT JOIN annotations n ON n.assignment_id = a.id
                    WHERE n.assignment_id IS NULL
                       OR (IFNULL(n.is_final, 0) = 0
@@ -433,6 +463,8 @@ class SqliteStore(BaseStore):
             ).fetchone()
             if arow is None:
                 raise KeyError(assignment_id)
+            if self.is_batch_archived(arow["batch_id"]):
+                raise ValueError("批次已归档，禁止标注")
             answer = self._validate_input(arow["head"], answer, disposition, is_final)
             prev = self.conn.execute(
                 "SELECT revision FROM annotations WHERE assignment_id = ?", (assignment_id,)
@@ -645,6 +677,12 @@ class MysqlStore(BaseStore):
             try:
                 for stmt in MYSQL_DDL:
                     cur.execute(stmt)
+                # 存量库迁移：老版本的 batches 表没有 archived_at 列（1060=列已存在）
+                try:
+                    cur.execute("ALTER TABLE batches ADD COLUMN archived_at VARCHAR(32) NULL")
+                except Exception as exc:
+                    if getattr(exc, "args", [None])[0] != 1060:
+                        raise
                 self.conn.commit()
             finally:
                 cur.close()
@@ -671,6 +709,7 @@ class MysqlStore(BaseStore):
                        FROM batches b
                        LEFT JOIN assignments a ON a.batch_id = b.id
                        LEFT JOIN annotations n ON n.assignment_id = a.id
+                       WHERE b.archived_at IS NULL
                        GROUP BY b.id, b.name, b.created_at, b.schema_version
                        ORDER BY b.created_at DESC, b.id""",
                     TERMINAL_DISPOSITIONS,
@@ -688,6 +727,7 @@ class MysqlStore(BaseStore):
                 cur.execute(
                     """SELECT a.batch_id, a.id
                        FROM assignments a
+                       JOIN batches b ON b.id = a.batch_id AND b.archived_at IS NULL
                        LEFT JOIN annotations n ON n.assignment_id = a.id
                        WHERE n.assignment_id IS NULL
                           OR (IFNULL(n.is_final, 0) = 0
@@ -704,6 +744,35 @@ class MysqlStore(BaseStore):
         if row is None:
             return {"batch_id": None, "assignment_id": None}
         return {"batch_id": row["batch_id"], "assignment_id": row["id"]}
+
+    def is_batch_archived(self, batch_id):
+        with self.lock:
+            self._ping()
+            cur = self.conn.cursor()
+            try:
+                cur.execute("SELECT archived_at FROM batches WHERE id = %s", (batch_id,))
+                row = cur.fetchone()
+            finally:
+                cur.close()
+        return bool(row and row["archived_at"])
+
+    def archive_batch(self, batch_id):
+        """标记归档（数据不动，列表隐藏、禁止再标注）。返回 archived_at。"""
+        with self.lock:
+            self._ping()
+            cur = self.conn.cursor()
+            try:
+                cur.execute("SELECT archived_at FROM batches WHERE id = %s", (batch_id,))
+                row = cur.fetchone()
+                if row is None:
+                    raise KeyError(batch_id)
+                if row["archived_at"]:
+                    raise ValueError("批次已归档")
+                ts = now_iso()
+                cur.execute("UPDATE batches SET archived_at = %s WHERE id = %s", (ts, batch_id))
+            finally:
+                cur.close()
+        return ts
 
     def list_assignments(self, batch_id, head):
         with self.lock:
@@ -764,6 +833,12 @@ class MysqlStore(BaseStore):
                 arow = cur.fetchone()
                 if arow is None:
                     raise KeyError(assignment_id)
+                cur.execute(
+                    "SELECT archived_at FROM batches WHERE id = %s", (arow["batch_id"],)
+                )
+                _brow = cur.fetchone()
+                if _brow and _brow["archived_at"]:
+                    raise ValueError("批次已归档，禁止标注")
                 head = arow["head"]
                 answer = self._validate_input(head, answer, disposition, is_final)
                 cur.execute(

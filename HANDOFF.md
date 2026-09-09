@@ -114,9 +114,12 @@ data/annotations.jsonl        每次保存 append 一行（gitignore）
 ### API
 
 - `GET /api/resume` → `{batch_id, assignment_id}`；未完成 = 无标注 或（`is_final=0` 且
-  disposition 不属于终态 {跳过, 无法判断, 缺少上下文}）；排序：最近活动优先，从未触碰按 position。
-- `GET /api/batches` → 含 `total` / `done`（done = is_final=1 或终态 disposition）。
-- `GET /api/assignments?batch_id=&head=` → 按 position 升序，含 `answer/disposition/is_final` 快照。
+  disposition 不属于终态 {跳过, 无法判断, 缺少上下文}）；排序：最近活动优先，从未触碰按 position；
+  **已归档批次跳过（P7）**。
+- `GET /api/batches` → 含 `total` / `done`（done = is_final=1 或终态 disposition）；
+  **已归档批次不返回（P7）**。
+- `GET /api/assignments?batch_id=&head=` → 按 position 升序，含 `answer/disposition/is_final` 快照；
+  归档批次 → **404**。
 - `GET /api/assignment?id=` → assignment + sample（content/metadata）+ head 释义（glossary）+
   全局不变量（invariants）+ disposition 词表。
 - `POST /api/annotations` → `{assignment_id, answer, disposition, is_final}`；answer 为
@@ -126,6 +129,10 @@ data/annotations.jsonl        每次保存 append 一行（gitignore）
 - **取消**：`answer=null, disposition=null, is_final=false` = 清除标注（P7 起），revision+1、
   status 回 in_progress、resume 重新可见；`is_final=true` 时空标注仍 400。前端 = 再点一次
   已选中的 disposition chip（保留已有 answer 与 final 态）。
+- **归档（P7）**：`POST /api/batch/archive {batch_id}` → `batches.archived_at` 打时间戳
+  （存量库启动时自动 ALTER 补列，MySQL 1060 幂等）+ 导出全量 9 列 CSV（utf-8-sig）到
+  `data/exports/<safe_batch_id>.csv`；归档后列表/resume 隐藏、assignments 404、写入 400；
+  数据保留，页面不可撤销。
 
 ### 导出（stdout 重定向即文件）
 

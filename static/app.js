@@ -138,6 +138,13 @@ async function flushQueue() {
           body: JSON.stringify(item.payload),
         });
       } catch (e) {
+        if (String(e.message || "").includes("已归档")) {
+          // 批次被归档后拒绝写入：丢弃队列里这条并继续，不进入重试
+          dequeueSave(item.assignment_id);
+          state.syncFailToastShown = false;
+          toast("批次已归档，未同步的点击已丢弃", true);
+          continue;
+        }
         if (!state.syncFailToastShown) {
           toast(`本机已保存 · 待同步 ${q.length} 条`, true);
           state.syncFailToastShown = true;
@@ -248,17 +255,27 @@ function renderStart() {
       : '<p class="muted">暂无 batch：先用 tools/import_batch.py 或 tools/seed_demo.py 导入。</p>';
   }
   for (const b of state.batches) {
-    const btn = document.createElement("button");
-    btn.className = "pick-item";
-    btn.innerHTML = `<span>${b.id}</span><span class="sub">${batchSubText(b)}</span>`;
-    if (state.session && state.session.batchId === b.id) btn.classList.add("selected");
-    btn.addEventListener("click", () => {
+    const row = document.createElement("div");
+    row.className = "pick-item batch-row";
+    row.innerHTML =
+      `<span class="batch-info"><span>${b.id}</span>` +
+      `<span class="sub">${batchSubText(b)}</span></span>`;
+    if (state.session && state.session.batchId === b.id) row.classList.add("selected");
+    row.addEventListener("click", () => {
       state.session = { batchId: b.id, head: state.session && state.session.batchId === b.id ? state.session.head : null };
       state.headCounts = {};
       renderStart();
       refreshStartData();
     });
-    bl.appendChild(btn);
+    const arch = document.createElement("button");
+    arch.className = "arch-btn";
+    arch.textContent = "归档";
+    arch.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      confirmArchiveBatch(b.id);
+    });
+    row.appendChild(arch);
+    bl.appendChild(row);
   }
   const hl = $("#head-list");
   hl.innerHTML = "";
@@ -328,6 +345,14 @@ async function enterMain(batchId, head, jumpToId) {
     rows = await api(`/api/assignments?batch_id=${encodeURIComponent(batchId)}&head=${encodeURIComponent(head)}`);
     cacheList(batchId, head, rows);
   } catch (e) {
+    if (String(e.message || "").includes("已归档")) {
+      toast("该批次已归档，不可进入", true);
+      state.session = { batchId: null, head: null };
+      saveSession();
+      renderStart();
+      refreshStartData();
+      return false;
+    }
     rows = cachedList(batchId, head);
     if (!rows) {
       toast("无法加载任务且无本地缓存", true);
@@ -603,6 +628,36 @@ function showSwitchSheet() {
     state.session = { batchId: state.session.batchId, head: null };
     renderStart();
     refreshStartData();
+  });
+}
+
+/* ---------- 批次归档 ---------- */
+
+function confirmArchiveBatch(batchId) {
+  const html =
+    '<h3 class="sheet-title">归档该批次？</h3>' +
+    `<p class="sheet-sub">${esc(batchId)}</p>` +
+    '<p class="gloss-def">归档后：批次从列表隐藏、不可再标注；数据保留不变，' +
+    '并导出一份 CSV 快照到服务器 data/exports/。</p>' +
+    '<button id="btn-archive-yes" class="ghost-btn" style="width:100%;height:44px;margin-top:8px;">确定归档</button>';
+  openSheet(html);
+  $("#btn-archive-yes").addEventListener("click", async () => {
+    try {
+      const r = await api("/api/batch/archive", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ batch_id: batchId }),
+      });
+      closeSheet();
+      toast(`已归档 · CSV ${r.export_rows} 行已导出`);
+      if (state.session && state.session.batchId === batchId) {
+        state.session = { batchId: null, head: null };
+      }
+      renderStart();
+      refreshStartData();
+    } catch (e) {
+      toast(`归档失败：${e.message}`, true);
+    }
   });
 }
 

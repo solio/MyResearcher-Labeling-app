@@ -38,6 +38,7 @@ class ServerTestBase(unittest.TestCase):
         self.jsonl = base / "annotations.jsonl"
         glossary = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
         server_mod.Handler.store = server_mod.Store(str(self.db), str(self.jsonl), glossary)
+        server_mod.Handler.cfg = {"jsonl_path": str(self.jsonl)}
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server_mod.Handler)
         self.port = self.httpd.server_address[1]
         self._thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
@@ -55,12 +56,18 @@ class ServerTestBase(unittest.TestCase):
         )
 
     def get(self, path):
-        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}{path}") as r:
-            return r.status, json.loads(r.read())
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{self.port}{path}") as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
 
     def post(self, body):
+        return self.post_path("/api/annotations", body)
+
+    def post_path(self, path, body):
         req = urllib.request.Request(
-            f"http://127.0.0.1:{self.port}/api/annotations",
+            f"http://127.0.0.1:{self.port}{path}",
             data=json.dumps(body).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
@@ -154,6 +161,39 @@ class TestIdempotentUpsert(ServerTestBase):
         self.assertEqual(r2["answer"], "BULL")
         self.assertIsNone(r2["disposition"])
         self.assertEqual(r2["is_final"], False)
+
+
+class TestArchive(ServerTestBase):
+    def test_archive_flow(self):
+        self.seed()
+        self.post({"assignment_id": "tb:s-1:stance", "answer": "BULL", "is_final": True})
+        # 归档：200 + 导出 CSV 快照
+        code, r = self.post_path("/api/batch/archive", {"batch_id": "tb"})
+        self.assertEqual(code, 200, r)
+        self.assertTrue(r["ok"])
+        self.assertTrue(r["archived_at"])
+        export = Path(r["export_path"])
+        self.assertTrue(export.is_file())
+        lines = export.read_text(encoding="utf-8-sig").strip().splitlines()
+        self.assertEqual(len(lines), 3)  # header + 2 行（含未标注行）
+        self.assertIn("BULL", lines[1])
+        # 数据保留：annotations 表不动
+        self.assertEqual(self.db_count("annotations"), 1)
+        # 归档后：列表隐藏、任务清单 404、resume 不再指向、写入被拒、重复归档 400、未知批次 404
+        _, batches = self.get("/api/batches")
+        self.assertEqual([b["id"] for b in batches], [])
+        code, err = self.get("/api/assignments?batch_id=tb&head=stance")
+        self.assertEqual(code, 404)
+        self.assertIn("已归档", err["error"])
+        self.assertEqual(self.get("/api/resume")[1]["batch_id"], None)
+        code, err = self.post({"assignment_id": "tb:s-2:stance", "answer": "BEAR", "is_final": True})
+        self.assertEqual(code, 400)
+        self.assertIn("已归档", err["error"])
+        code, err = self.post_path("/api/batch/archive", {"batch_id": "tb"})
+        self.assertEqual(code, 400)
+        self.assertIn("已归档", err["error"])
+        code, _ = self.post_path("/api/batch/archive", {"batch_id": "no_such"})
+        self.assertEqual(code, 404)
 
 
 class TestRoundTrip(ServerTestBase):
@@ -289,14 +329,12 @@ class TestApiBasics(ServerTestBase):
             self.assertIn("MyResearcher", body)
 
     def test_assignments_requires_params(self):
-        with self.assertRaises(urllib.error.HTTPError) as cm:
-            self.get("/api/assignments")
-        self.assertEqual(cm.exception.code, 400)
+        code, _ = self.get("/api/assignments")
+        self.assertEqual(code, 400)
 
     def test_unknown_assignment_404(self):
-        with self.assertRaises(urllib.error.HTTPError) as cm:
-            self.get("/api/assignment?id=nope")
-        self.assertEqual(cm.exception.code, 404)
+        code, _ = self.get("/api/assignment?id=nope")
+        self.assertEqual(code, 404)
         code, _ = self.post({"assignment_id": "nope", "answer": "BULL"})
         self.assertEqual(code, 404)
 

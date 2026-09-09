@@ -44,6 +44,7 @@ CONTENT_TYPES = {
 
 class Handler(BaseHTTPRequestHandler):
     store = None
+    cfg = None
     protocol_version = "HTTP/1.1"
     server_version = "MyResearcherLabeler/1.1"
 
@@ -74,6 +75,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(400, {"error": "batch_id 与 head 必填"})
                 if head not in self.store.head_order():
                     return self._json(400, {"error": f"未知 head: {head}"})
+                if self.store.is_batch_archived(batch_id):
+                    return self._json(404, {"error": "批次已归档"})
                 self._json(200, self.store.list_assignments(batch_id, head))
             elif parsed.path == "/api/assignment":
                 qs = parse_qs(parsed.query)
@@ -94,6 +97,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
+        if parsed.path == "/api/batch/archive":
+            return self._handle_archive()
         if parsed.path != "/api/annotations":
             return self._json(404, {"error": "not found"})
         try:
@@ -125,6 +130,58 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(500, {"error": str(exc)})
             except Exception:
                 pass
+
+    def _handle_archive(self):
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(length) if length else b""
+            body = json.loads(raw.decode("utf-8")) if raw else None
+            if not isinstance(body, dict):
+                raise ValueError("请求体必须是 JSON 对象")
+            batch_id = body.get("batch_id")
+            if not isinstance(batch_id, str) or not batch_id.strip():
+                raise ValueError("batch_id 必填")
+            batch_id = batch_id.strip()
+            archived_at = self.store.archive_batch(batch_id)
+            path, rows_n = self._export_batch_csv(batch_id)
+            self._json(200, {"ok": True, "batch_id": batch_id, "archived_at": archived_at,
+                             "export_path": str(path), "export_rows": rows_n})
+        except ValueError as exc:
+            self._json(400, {"error": str(exc)})
+        except KeyError as exc:
+            self._json(404, {"error": f"batch 不存在: {exc}"})
+        except BrokenPipeError:
+            pass
+        except Exception as exc:
+            try:
+                self._json(500, {"error": str(exc)})
+            except Exception:
+                pass
+
+    def _export_batch_csv(self, batch_id):
+        """归档快照：全量 9 列 CSV（含未标注行），utf-8-sig 便于 Excel 直接打开。"""
+        import csv
+        rows = list(self.store.export_rows(final_only=False, batch_id=batch_id))
+        base = (self.cfg or {}).get("jsonl_path") or str(DEFAULT_JSONL)
+        exports_dir = Path(base).parent / "exports"
+        exports_dir.mkdir(parents=True, exist_ok=True)
+        safe = "".join(c if (c.isalnum() or c in "._-") else "_" for c in batch_id)
+        path = exports_dir / f"{safe}.csv"
+        with open(path, "w", encoding="utf-8-sig", newline="") as f:
+            w = csv.writer(f, lineterminator="\n")
+            w.writerow(["batch", "sample_id", "head", "answer", "disposition", "is_final",
+                        "schema_version", "updated_at", "metadata"])
+            for r in rows:
+                answer = r["answer"]
+                w.writerow([
+                    r["batch"], r["sample_id"], r["head"],
+                    answer if isinstance(answer, str) or answer is None
+                    else json.dumps(answer, ensure_ascii=False),
+                    r["disposition"], 1 if r["is_final"] else 0,
+                    r["schema_version"], r["updated_at"],
+                    json.dumps(r["metadata"], ensure_ascii=False, sort_keys=True),
+                ])
+        return path, len(rows)
 
     def _static(self, path):
         if path in ("", "/"):
@@ -183,6 +240,7 @@ def main():
     except ConfigError as exc:
         print(f"[server] {exc}", file=sys.stderr)
         sys.exit(2)
+    Handler.cfg = cfg
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     httpd.daemon_threads = True
     backend = (f"mysql://{cfg['mysql']['user']}@{cfg['mysql']['host']}:{cfg['mysql']['port']}"

@@ -192,6 +192,7 @@ python3 -m unittest discover tests
 - [ ] 刷新页面 → 恢复原 batch/head/sample 与已填答案
 - [ ] 断网（关电脑服务）点击 →"本机已保存·待同步 N 条"；恢复服务 → 约 5–10s 自动同步为"已入库"
 - [ ] 换 head（⇄）→ 返回选择页，重进后进度保留；选择页各 head 显示"剩 N / M"且随标注刷新
+- [ ] 批次行"归档"→ 确认 → 批次从列表消失、CSV 落在服务器 data/exports/；刷新后不再出现
 - [ ] 导出 jsonl/csv 与界面数据一致，`split_provenance` 原样保留
 
 ## 已知限制
