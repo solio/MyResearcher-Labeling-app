@@ -52,6 +52,32 @@ function isMultiHead(head) {
   const current = state.details.get(state.assignments[state.idx] && state.assignments[state.idx].id);
   return !!(current && current.glossary && current.glossary.type === "multi") || head === "reasoning_tags";
 }
+function isUnknownExclusiveHead(head) {
+  const current = state.details.get(state.assignments[state.idx] && state.assignments[state.idx].id);
+  return !!(current && current.glossary && current.glossary.unknown_is_exclusive === true && isMultiHead(head));
+}
+// Pure answer transition used by the click handler.  Keeping this separate
+// makes the two UNKNOWN/concrete click orders directly regression-testable.
+function nextMultiAnswer(currentAnswer, labelId, unknownExclusive) {
+  const cur = Array.isArray(currentAnswer) ? currentAnswer.slice() : [];
+  if (!unknownExclusive) {
+    const i = cur.indexOf(labelId);
+    if (i >= 0) cur.splice(i, 1); else cur.push(labelId);
+    return cur;
+  }
+  if (labelId === "UNKNOWN") {
+    return cur.includes("UNKNOWN") ? [] : ["UNKNOWN"];
+  }
+  const withoutUnknown = cur.filter((value) => value !== "UNKNOWN");
+  const i = withoutUnknown.indexOf(labelId);
+  if (i >= 0) withoutUnknown.splice(i, 1); else withoutUnknown.push(labelId);
+  return withoutUnknown;
+}
+function normalizeMultiAnswer(answer, unknownExclusive) {
+  if (!unknownExclusive || !Array.isArray(answer)) return answer;
+  const unique = [...new Set(answer)];
+  return unique.includes("UNKNOWN") ? ["UNKNOWN"] : unique;
+}
 const isDone = (a) => !!(a.is_final || TERMINAL_DISPOSITIONS.includes(a.disposition));
 
 /* ---------- 基础设施 ---------- */
@@ -476,10 +502,7 @@ function onLabelClick(labelId) {
   const a = state.assignments[state.idx];
   let answer;
   if (isMultiHead(state.session.head)) {
-    const cur = Array.isArray(a.answer) ? a.answer.slice() : [];
-    const i = cur.indexOf(labelId);
-    if (i >= 0) cur.splice(i, 1); else cur.push(labelId);
-    answer = cur;
+    answer = nextMultiAnswer(a.answer, labelId, isUnknownExclusiveHead(state.session.head));
   } else {
     answer = a.answer === labelId ? a.answer : labelId;
   }
@@ -554,10 +577,15 @@ function onDispositionClick(d) {
 /* 保存链路：先落 localStorage 队列，再尝试 POST（幂等 upsert） */
 function saveAnnotation(st) {
   const a = state.assignments[state.idx];
-  a.answer = st.answer;
+  const answer = normalizeMultiAnswer(
+    st.answer,
+    isMultiHead(state.session.head) && isUnknownExclusiveHead(state.session.head),
+  );
+  const payload = { ...st, answer };
+  a.answer = answer;
   a.disposition = st.disposition;
   a.is_final = st.is_final;
-  enqueueSave(a.id, st);
+  enqueueSave(a.id, payload);
   const detail = state.details.get(a.id);
   if (detail) renderLabels(detail);
   renderDispositions();
