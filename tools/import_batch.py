@@ -13,7 +13,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
-from storage import SCHEMA_PATH, SqliteStore  # noqa: E402
+from storage import BASE_SCHEMA_VERSION, SCHEMA_PATH, SqliteStore, load_schema_catalog  # noqa: E402
 
 DEFAULT_DB = PROJECT_ROOT / "data" / "labeler.db"
 REQUIRED_FIELDS = ("sample_id", "text")
@@ -70,7 +70,10 @@ def parse_samples(path):
 
 
 def import_samples(db_path, batch_id, samples, heads, schema_version):
-    glossary = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    try:
+        glossary = load_schema_catalog()[schema_version]
+    except (KeyError, ValueError) as exc:
+        fail(f"不支持的 schema_version: {schema_version}")
     head_order = glossary.get("head_order", [])
     unknown = [h for h in heads if h not in head_order]
     if unknown:
@@ -89,11 +92,19 @@ def main():
     ap.add_argument("--batch", required=True, help="batch id（同时作为显示名）")
     ap.add_argument("--file", required=True, help="samples.jsonl 路径")
     ap.add_argument("--heads", required=True, help="逗号分隔的 head 列表，如 target_mode,stance")
+    ap.add_argument(
+        "--schema-version", default=BASE_SCHEMA_VERSION,
+        help="批次绑定的 Schema 版本（默认 semantic-schema-calibrated-v0.2.1）",
+    )
     ap.add_argument("--db", default=str(DEFAULT_DB))
     args = ap.parse_args()
 
     glossary = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
-    head_order = glossary.get("head_order", [])
+    try:
+        schema = load_schema_catalog()[args.schema_version]
+    except KeyError:
+        fail(f"不支持的 schema_version: {args.schema_version}")
+    head_order = schema.get("head_order", [])
     heads = [h.strip() for h in args.heads.split(",") if h.strip()]
     if not heads:
         fail("--heads 不能为空")
@@ -104,7 +115,7 @@ def main():
         fail(f"未知 head: {unknown}（可用: {head_order}）")
 
     samples = parse_samples(args.file)
-    stats = import_samples(args.db, args.batch, samples, heads, glossary.get("schema_version"))
+    stats = import_samples(args.db, args.batch, samples, heads, args.schema_version)
     print(
         f"[import_batch] OK batch={args.batch} samples={stats['samples']} "
         f"heads={len(heads)} assignments={stats['assignments']} db={args.db}"

@@ -5,7 +5,7 @@
  * 失败则"本机已保存·待同步 N 条"，网络恢复（online 事件 / 10s 定时 / 启动）自动重试。
  */
 
-const HEADS = [
+const DEFAULT_HEADS = [
   { id: "target_mode", name: "目标对象" },
   { id: "stance", name: "方向立场" },
   { id: "emotion_primary", name: "主情绪" },
@@ -25,6 +25,7 @@ const DETAILS_CAP = 200;
 const state = {
   session: null,       // { batchId, head }
   batches: [],
+  heads: DEFAULT_HEADS,
   batchesError: null,
   headCounts: {},      // headId -> {total, left}（当前选中 batch 的未完成量）
   completionShown: {}, // batchId -> true（完成页每 batch 每会话只弹一次）
@@ -36,8 +37,21 @@ const state = {
 };
 
 const $ = (sel) => document.querySelector(sel);
-const headName = (id) => (HEADS.find(h => h.id === id) || {}).name || id;
-const isMultiHead = (head) => head === "reasoning_tags";
+function headsForBatch(batchId) {
+  const batch = state.batches.find((b) => b.id === batchId);
+  if (batch && Array.isArray(batch.heads) && batch.heads.length) return batch.heads;
+  return DEFAULT_HEADS;
+}
+function headName(id) {
+  const current = state.details.get(state.assignments[state.idx] && state.assignments[state.idx].id);
+  if (current && current.glossary && current.glossary.name_zh) return current.glossary.name_zh;
+  const h = headsForBatch(state.session && state.session.batchId).find((item) => item.id === id);
+  return (h && (h.name || h.name_zh)) || id;
+}
+function isMultiHead(head) {
+  const current = state.details.get(state.assignments[state.idx] && state.assignments[state.idx].id);
+  return !!(current && current.glossary && current.glossary.type === "multi") || head === "reasoning_tags";
+}
 const isDone = (a) => !!(a.is_final || TERMINAL_DISPOSITIONS.includes(a.disposition));
 
 /* ---------- 基础设施 ---------- */
@@ -280,7 +294,12 @@ function renderStart() {
   const hl = $("#head-list");
   hl.innerHTML = "";
   const selBatchId = state.session && state.session.batchId;
-  for (const h of HEADS) {
+  const availableHeads = headsForBatch(selBatchId);
+  if (state.session && state.session.head && !availableHeads.some((h) => h.id === state.session.head)) {
+    state.session.head = null;
+    saveSession();
+  }
+  for (const h of availableHeads) {
     const btn = document.createElement("button");
     btn.className = "pick-item";
     btn.innerHTML = `<span>${h.name}</span><span class="sub">${headSubText(selBatchId, h.id)}</span>`;
@@ -321,7 +340,7 @@ async function refreshStartData() {
       api("/api/batches").then((bs) => { state.batches = bs; }).catch(() => {}),
     ];
     if (batchId) {
-      for (const h of HEADS) {
+      for (const h of headsForBatch(batchId)) {
         jobs.push(
           fetchHeadCount(batchId, h.id).then((c) => { if (c) state.headCounts[h.id] = c; })
         );
@@ -594,6 +613,7 @@ function showHeadSheet() {
     `<h3 class="sheet-title">${esc(headName(state.session.head))} <span class="muted">(${esc(state.session.head)})</span></h3>` +
     `<p class="gloss-q">${esc(g.question)}</p>` +
     `<p class="gloss-def">${esc(g.definition_zh || "")}</p>` +
+    (g.applicable_when ? `<p class="gloss-sec">适用条件</p>${items([g.applicable_when])}` : "") +
     (g.select_when ? `<p class="gloss-sec">✓ 该选</p>${items([g.select_when])}` : "") +
     (g.not_select_when ? `<p class="gloss-sec">✗ 不该选</p>${items([g.not_select_when])}` : "") +
     (g.positive_examples && g.positive_examples.length ? `<p class="gloss-sec">正例</p>${items(g.positive_examples)}` : "") +
@@ -606,6 +626,7 @@ function showLabelSheet(detail, label) {
   const html =
     `<h3 class="sheet-title">${esc(label.name_zh)} <span class="muted">(${esc(label.id)})</span></h3>` +
     `<p class="gloss-def">${esc(label.description)}</p>` +
+    (label.applicable_when ? `<p class="gloss-sec">适用条件</p><p class="gloss-item">${esc(label.applicable_when)}</p>` : "") +
     (g.confusable && g.confusable.length
       ? `<p class="gloss-sec">本 head 易混淆提示</p>` +
         g.confusable.map((x) => `<p class="gloss-item">${esc(x)}</p>`).join("")

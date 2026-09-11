@@ -12,7 +12,10 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from storage import ConfigError, SqliteStore, load_config  # noqa: E402
+from storage import (  # noqa: E402
+    BASE_SCHEMA_VERSION, V03_SCHEMA_VERSION, ConfigError, SqliteStore,
+    load_config, load_schema_catalog,
+)
 
 SCHEMA_PATH = PROJECT_ROOT / "schema" / "annotation-schema.v1.json"
 SCHEMA_VERSION = "semantic-schema-calibrated-v0.2.1"
@@ -274,6 +277,115 @@ class TestGptTasks(unittest.TestCase):
         r = self.run_tool("pull", "--config", bad)
         self.assertEqual(r.returncode, 2)
         self.assertIn("配置错误", r.stderr)
+
+
+class TestV03AuxiliaryAssignments(unittest.TestCase):
+    """v0.3 稀疏辅助因子：版本绑定、合法答案与导出契约。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        tmp = self._tmp.name
+        self.cfg_path = write(tmp, "config.json", {
+            "storage": "sqlite", "jsonl_path": "data/a.jsonl", "sqlite": {"db_path": "data/labeler.db"},
+        })
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def run_tool(self, *argv):
+        return subprocess.run(
+            [sys.executable, str(PROJECT_ROOT / "tools" / "gpt_tasks.py"), *argv],
+            capture_output=True, text=True, timeout=60,
+        )
+
+    def v03_path(self, name="v03.jsonl"):
+        return write(self._tmp.name, name, "\n".join([
+            json.dumps({
+                "sample_id": "v-a", "text": "预期上涨，情绪平静。",
+                "heads": ["expectation_phase", "arousal_level"],
+            }, ensure_ascii=False),
+            json.dumps({
+                "sample_id": "v-b", "text": "市场资金与大盘都在观察。",
+                "heads": ["market_scope", "discourse_focus"],
+            }, ensure_ascii=False),
+        ]) + "\n")
+
+    def test_v03_sparse_round_trip_exposes_order_and_preserves_answers(self):
+        path = self.v03_path()
+        r = self.run_tool(
+            "add", "--batch", "v03", "--assignment-file", path,
+            "--schema-version", V03_SCHEMA_VERSION, "--config", self.cfg_path,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("samples=2", r.stdout)
+        self.assertIn("heads=4", r.stdout)
+        self.assertIn("assignments=4", r.stdout)
+
+        db_path = Path(self._tmp.name) / "data" / "labeler.db"
+        catalog = load_schema_catalog()
+        store = SqliteStore(str(db_path), None, catalog[V03_SCHEMA_VERSION])
+        try:
+            batch = store.list_batches()[0]
+            self.assertEqual(batch["schema_version"], V03_SCHEMA_VERSION)
+            specs = {s["id"]: s for s in batch["heads"]}
+            self.assertEqual(specs["arousal_level"]["task_type"], "ordered_single_label")
+            self.assertEqual(specs["arousal_level"]["ordered_values"], ["LOW", "MEDIUM", "HIGH"])
+            self.assertEqual([r["head"] for r in store.list_assignments("v03", "arousal_level")], ["arousal_level"])
+
+            # 单选与多选均按 v0.3 合同保存；未回答仍是 null/false。
+            saved = store.upsert_annotation("v03:v-a:arousal_level", "HIGH", None, True)
+            self.assertEqual(saved["schema_version"], V03_SCHEMA_VERSION)
+            store.upsert_annotation("v03:v-b:market_scope", ["UNKNOWN"], None, True)
+            store.upsert_annotation("v03:v-b:discourse_focus", None, None, False)
+            with self.assertRaises(ValueError):
+                store.upsert_annotation("v03:v-b:market_scope", ["UNKNOWN", "BROAD_MARKET"], None, True)
+            with self.assertRaises(ValueError):
+                store.upsert_annotation("v03:v-b:discourse_focus", [], None, True)
+
+            rows = [r for r in store.export_rows(batch_id="v03")]
+        finally:
+            store.close()
+
+        self.assertEqual(len(rows), 4)
+        self.assertTrue(all(r["schema_version"] == V03_SCHEMA_VERSION for r in rows))
+        arousal = next(r for r in rows if r["head"] == "arousal_level")
+        self.assertEqual(arousal["answer"], "HIGH")
+        self.assertTrue(arousal["is_final"])
+        unfinished = next(r for r in rows if r["head"] == "discourse_focus")
+        self.assertIsNone(unfinished["answer"])
+        self.assertFalse(unfinished["is_final"])
+
+        pulled = self.run_tool("pull", "--batch", "v03", "--config", self.cfg_path)
+        self.assertEqual(pulled.returncode, 0, pulled.stderr)
+        exported = [json.loads(line) for line in pulled.stdout.strip().splitlines()]
+        self.assertEqual(len(exported), 4)
+        self.assertEqual({r["head"] for r in exported}, {
+            "expectation_phase", "arousal_level", "market_scope", "discourse_focus",
+        })
+
+    def test_batch_rejects_append_with_different_schema_version(self):
+        old = write(self._tmp.name, "old.jsonl", json.dumps({"sample_id": "old-1", "text": "旧批次"}, ensure_ascii=False) + "\n")
+        first = self.run_tool(
+            "add", "--batch", "mixed", "--file", old, "--heads", "stance", "--config", self.cfg_path,
+        )
+        self.assertEqual(first.returncode, 0, first.stderr)
+        v03 = write(self._tmp.name, "new.jsonl", json.dumps({
+            "sample_id": "new-1", "text": "新辅助因子", "heads": ["arousal_level"],
+        }, ensure_ascii=False) + "\n")
+        second = self.run_tool(
+            "add", "--batch", "mixed", "--assignment-file", v03,
+            "--schema-version", V03_SCHEMA_VERSION, "--config", self.cfg_path,
+        )
+        self.assertEqual(second.returncode, 1)
+        self.assertIn("schema_version", second.stderr)
+
+        import sqlite3
+        con = sqlite3.connect(Path(self._tmp.name) / "data" / "labeler.db")
+        try:
+            self.assertEqual(con.execute("SELECT schema_version FROM batches WHERE id='mixed'").fetchone()[0], BASE_SCHEMA_VERSION)
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM samples WHERE batch_id='mixed'").fetchone()[0], 1)
+        finally:
+            con.close()
 
 
 class TestSqliteLegacyMigration(unittest.TestCase):

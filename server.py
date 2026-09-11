@@ -73,7 +73,11 @@ class Handler(BaseHTTPRequestHandler):
                 head = (qs.get("head") or [""])[0]
                 if not batch_id or not head:
                     return self._json(400, {"error": "batch_id 与 head 必填"})
-                if head not in self.store.head_order():
+                try:
+                    allowed_heads = self.store.head_order_for_batch(batch_id)
+                except KeyError:
+                    return self._json(404, {"error": f"批次不存在: {batch_id}"})
+                if head not in allowed_heads:
                     return self._json(400, {"error": f"未知 head: {head}"})
                 if self.store.is_batch_archived(batch_id):
                     return self._json(404, {"error": "批次已归档"})

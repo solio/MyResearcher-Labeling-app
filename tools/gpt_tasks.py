@@ -18,7 +18,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "tools"))
 from storage import (  # noqa: E402
-    SCHEMA_PATH, TERMINAL_DISPOSITIONS, ConfigError, create_store, load_config,
+    BASE_SCHEMA_VERSION, SCHEMA_PATH, TERMINAL_DISPOSITIONS, ConfigError,
+    create_store, load_config, load_schema_catalog,
 )
 from import_batch import parse_samples  # noqa: E402
 
@@ -115,7 +116,11 @@ def parse_assignment_file(path, head_order):
 
 
 def cmd_add(args):
-    glossary = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    try:
+        catalog = load_schema_catalog()
+        glossary = catalog[args.schema_version]
+    except (ConfigError, KeyError) as exc:
+        die(f"不支持的 schema_version: {args.schema_version}")
     head_order = glossary.get("head_order", [])
     if bool(args.file) == bool(args.assignment_file):
         die("必须且只能指定 --file 或 --assignment-file")
@@ -142,9 +147,9 @@ def cmd_add(args):
     cfg, _, store = _load_env(args.config)
     try:
         if import_sparse:
-            stats = store.import_sparse_samples(args.batch, samples, glossary.get("schema_version"))
+            stats = store.import_sparse_samples(args.batch, samples, args.schema_version)
         else:
-            stats = store.import_samples(args.batch, samples, heads, glossary.get("schema_version"))
+            stats = store.import_samples(args.batch, samples, heads, args.schema_version)
     except ValueError as exc:
         die(f"导入被拒绝（未写入任何数据）: {exc}")
     finally:
@@ -223,6 +228,10 @@ def main():
     )
     p_add.add_argument("--heads", default=None, help="逗号分隔的 head 列表，如 target_mode,stance（--file 模式）")
     p_add.add_argument("--config", default=None, help="配置文件路径（默认项目根 config.json）")
+    p_add.add_argument(
+        "--schema-version", default=BASE_SCHEMA_VERSION,
+        help="批次绑定的 Schema 版本（默认 semantic-schema-calibrated-v0.2.1）",
+    )
 
     p_pull = sub.add_parser("pull", help="拉取标注结果（jsonl/csv）")
     p_pull.add_argument("--format", choices=("jsonl", "csv"), default="jsonl")

@@ -22,6 +22,21 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 SCHEMA_PATH = PROJECT_ROOT / "schema" / "annotation-schema.v1.json"
+V03_SCHEMA_PATH = PROJECT_ROOT / "schema" / "annotation-schema-candidate-v0.3.json"
+BASE_SCHEMA_VERSION = "semantic-schema-calibrated-v0.2.1"
+V03_SCHEMA_VERSION = "semantic-schema-candidate-v0.3"
+# The legacy glossary deliberately stores questions/definitions but no display
+# name.  Keep the historical Chinese names when exposing the new per-batch
+# head metadata to the UI.
+LEGACY_HEAD_NAMES = {
+    "target_mode": "目标对象",
+    "stance": "方向立场",
+    "emotion_primary": "主情绪",
+    "emotion_target": "情绪指向",
+    "action_tendency": "动作倾向",
+    "context_dependency": "上下文依赖",
+    "reasoning_tags": "推理依据（多选）",
+}
 DEFAULT_DB = PROJECT_ROOT / "data" / "labeler.db"
 DEFAULT_JSONL = PROJECT_ROOT / "data" / "annotations.jsonl"
 
@@ -214,44 +229,115 @@ def create_store(cfg, glossary, jsonl_path=None):
     return SqliteStore(cfg["sqlite"]["db_path"], jp, glossary)
 
 
+def load_schema_catalog():
+    """Load the app's versioned annotation glossaries.
+
+    The original v0.2.1 glossary remains the default and is intentionally
+    unchanged.  The v0.3 candidate is a separate, additive sparse-factor
+    glossary copied from the ModelTraining contract at the source commit
+    recorded in that file.
+    """
+    try:
+        base = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ConfigError(f"无法读取标注 Schema: {SCHEMA_PATH}") from exc
+    catalog = {base.get("schema_version", BASE_SCHEMA_VERSION): base}
+    try:
+        candidate = json.loads(V03_SCHEMA_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        candidate = None
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ConfigError(f"无法读取 v0.3 标注 Schema: {V03_SCHEMA_PATH}") from exc
+    if candidate is not None:
+        if candidate.get("schema_version") != V03_SCHEMA_VERSION:
+            raise ConfigError("v0.3 标注 Schema 的 schema_version 不匹配")
+        catalog[V03_SCHEMA_VERSION] = candidate
+    return catalog
+
+
 class BaseStore:
     """两个后端共享的 glossary 访问、输入校验、jsonl 审计流水。"""
 
     def __init__(self, glossary, jsonl_path):
         self.glossary = glossary or {}
+        self.schemas = {self.glossary.get("schema_version", BASE_SCHEMA_VERSION): self.glossary}
+        # Keep callers that inject the legacy glossary in tests compatible,
+        # while making the candidate available to the real store as well.
+        for version, schema in load_schema_catalog().items():
+            self.schemas.setdefault(version, schema)
         self.lock = threading.RLock()
         self.jsonl_path = Path(jsonl_path) if jsonl_path else None
         if self.jsonl_path is not None:
             self.jsonl_path.parent.mkdir(parents=True, exist_ok=True)
 
-    def head_order(self):
-        return self.glossary.get("head_order", [])
+    def schema_for_version(self, schema_version):
+        schema = self.schemas.get(schema_version)
+        if not isinstance(schema, dict):
+            raise ValueError(f"未知 schema_version: {schema_version}")
+        return schema
 
-    def head_glossary(self, head):
-        return self.glossary.get("heads", {}).get(head)
+    def head_order(self, schema_version=None):
+        schema = self.glossary if schema_version is None else self.schema_for_version(schema_version)
+        return schema.get("head_order", [])
 
-    def head_type(self, head):
-        return (self.head_glossary(head) or {}).get("type", "single")
+    def head_order_for_batch(self, batch_id):
+        return self.head_order(self.batch_schema_version(batch_id))
 
-    def head_labels(self, head):
-        return [l["id"] for l in (self.head_glossary(head) or {}).get("labels", [])]
+    def head_specs(self, schema_version):
+        schema = self.schema_for_version(schema_version)
+        specs = []
+        for head in schema.get("head_order", []):
+            definition = schema.get("heads", {}).get(head, {})
+            specs.append({
+                "id": head,
+                "name": definition.get("name_zh") or LEGACY_HEAD_NAMES.get(head, head),
+                "type": definition.get("type", "single"),
+                "task_type": definition.get("task_type", "single_label"),
+                "ordered_values": definition.get("ordered_values"),
+            })
+        return specs
 
-    def _validate_input(self, head, answer, disposition, is_final=False):
+    def head_glossary(self, head, schema_version=None):
+        schema = self.glossary if schema_version is None else self.schema_for_version(schema_version)
+        return schema.get("heads", {}).get(head)
+
+    def head_type(self, head, schema_version=None):
+        return (self.head_glossary(head, schema_version) or {}).get("type", "single")
+
+    def head_labels(self, head, schema_version=None):
+        return [l["id"] for l in (self.head_glossary(head, schema_version) or {}).get("labels", [])]
+
+    def _validate_input(self, head, answer, disposition, is_final=False, schema_version=None):
+        schema = self.schema_for_version(schema_version or self.glossary.get("schema_version"))
+        definition = self.head_glossary(head, schema_version or schema.get("schema_version"))
+        if not definition:
+            raise ValueError(f"未知 head: {head}")
+        if is_final and answer is None:
+            raise ValueError("final 标注必须有合法答案，answer 不能为 null")
         if answer is None and not disposition:
             # null/null 且非 final = 「清除标注」（前端再点一次 disposition 取消），
             # 放行后 revision+1 落 NULL 行、status 回 in_progress；final 化仍拒绝。
             if is_final:
                 raise ValueError("answer 与 disposition 不能同时为空")
         if answer is not None:
-            labels = self.head_labels(head)
-            if self.head_type(head) == "multi":
+            labels = self.head_labels(head, schema.get("schema_version"))
+            if definition.get("type") == "multi" or definition.get("task_type") == "multi_label":
                 if not isinstance(answer, list) or not all(isinstance(x, str) for x in answer):
-                    raise ValueError("reasoning_tags 的 answer 必须是字符串数组")
+                    raise ValueError(f"{head} 的 answer 必须是字符串数组")
                 unknown = [x for x in answer if x not in labels]
                 if unknown:
                     raise ValueError(f"未知标签: {unknown}")
-                seen = set()
-                answer = [x for x in answer if not (x in seen or seen.add(x))]
+                if is_final and not answer:
+                    raise ValueError(f"{head} 的 final answer 不能为空")
+                if schema.get("schema_version") == V03_SCHEMA_VERSION:
+                    if len(set(answer)) != len(answer):
+                        raise ValueError(f"{head} 的 answer 不能有重复标签")
+                    if definition.get("unknown_is_exclusive") and "UNKNOWN" in answer and len(answer) != 1:
+                        raise ValueError(f"{head} 的 UNKNOWN 必须独占")
+                else:
+                    # Preserve the historical v0.2.1 behavior for old batches.
+                    seen = set()
+                    answer = [x for x in answer if not (x in seen or seen.add(x))]
             else:
                 if not isinstance(answer, str):
                     raise ValueError(f"{head} 的 answer 必须是字符串")
@@ -287,19 +373,20 @@ class BaseStore:
             "revision": d["revision"] or 0,
             "updated_at": d["updated_at"],
             "schema_version": d["schema_version"],
-            "glossary": self.head_glossary(d["head"]),
-            "invariants": self.glossary.get("invariants", []),
+            "glossary": self.head_glossary(d["head"], d["schema_version"]),
+            "invariants": self.schema_for_version(d["schema_version"]).get("invariants", self.glossary.get("invariants", [])),
             "dispositions": list(ALL_DISPOSITIONS),
         }
 
-    def _validate_import(self, batch_id, samples, heads):
+    def _validate_import(self, batch_id, samples, heads, schema_version):
         if not batch_id or not isinstance(batch_id, str):
             raise ValueError("batch_id 必须是非空字符串")
         if not samples:
             raise ValueError("samples 不能为空")
-        unknown = [h for h in heads if h not in self.head_order()]
+        self.schema_for_version(schema_version)
+        unknown = [h for h in heads if h not in self.head_order(schema_version)]
         if unknown:
-            raise ValueError(f"未知 head: {unknown}（可用: {self.head_order()}）")
+            raise ValueError(f"未知 head: {unknown}（可用: {self.head_order(schema_version)}）")
         sids = set()
         for s in samples:
             if not isinstance(s, dict) or not s.get("sample_id") or not s.get("text"):
@@ -308,7 +395,7 @@ class BaseStore:
                 raise ValueError(f"文件内 sample_id 重复: {s['sample_id']}")
             sids.add(s["sample_id"])
 
-    def _validate_sparse_import(self, batch_id, assignments):
+    def _validate_sparse_import(self, batch_id, assignments, schema_version):
         if not batch_id or not isinstance(batch_id, str):
             raise ValueError("batch_id 必须是非空字符串")
         if not assignments:
@@ -334,9 +421,9 @@ class BaseStore:
                 raise ValueError(f"sample {sample_id} 的 heads 必须全部是非空字符串")
             if len(set(heads)) != len(heads):
                 raise ValueError(f"sample {sample_id} 的 heads 存在重复")
-            unknown = [h for h in heads if h not in self.head_order()]
+            unknown = [h for h in heads if h not in self.head_order(schema_version)]
             if unknown:
-                raise ValueError(f"sample {sample_id} 未知 head: {unknown}（可用: {self.head_order()}）")
+                raise ValueError(f"sample {sample_id} 未知 head: {unknown}（可用: {self.head_order(schema_version)}）")
 
 
 class SqliteStore(BaseStore):
@@ -377,7 +464,12 @@ class SqliteStore(BaseStore):
                    ORDER BY b.created_at DESC, b.id""",
                 TERMINAL_DISPOSITIONS,
             ).fetchall()
-        return [dict(r) for r in rows]
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["heads"] = self.head_specs(item["schema_version"])
+            result.append(item)
+        return result
 
     def is_batch_archived(self, batch_id):
         with self.lock:
@@ -385,6 +477,15 @@ class SqliteStore(BaseStore):
                 "SELECT archived_at FROM batches WHERE id = ?", (batch_id,)
             ).fetchone()
         return bool(row and row["archived_at"])
+
+    def batch_schema_version(self, batch_id):
+        with self.lock:
+            row = self.conn.execute(
+                "SELECT schema_version FROM batches WHERE id = ?", (batch_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(batch_id)
+        return row["schema_version"]
 
     def archive_batch(self, batch_id):
         """标记归档（数据不动，列表隐藏、禁止再标注）。返回 archived_at。"""
@@ -465,7 +566,8 @@ class SqliteStore(BaseStore):
                 raise KeyError(assignment_id)
             if self.is_batch_archived(arow["batch_id"]):
                 raise ValueError("批次已归档，禁止标注")
-            answer = self._validate_input(arow["head"], answer, disposition, is_final)
+            schema_version = self.batch_schema_version(arow["batch_id"])
+            answer = self._validate_input(arow["head"], answer, disposition, is_final, schema_version)
             prev = self.conn.execute(
                 "SELECT revision FROM annotations WHERE assignment_id = ?", (assignment_id,)
             ).fetchone()
@@ -506,16 +608,24 @@ class SqliteStore(BaseStore):
                 "is_final": bool(is_final_i),
                 "revision": revision,
                 "updated_at": updated_at,
-                "schema_version": brow["schema_version"] if brow else None,
+                "schema_version": brow["schema_version"] if brow else schema_version,
             }
             self._append_jsonl(record)
             return record
 
     def import_samples(self, batch_id, samples, heads, schema_version):
-        self._validate_import(batch_id, samples, heads)
+        self._validate_import(batch_id, samples, heads, schema_version)
         with self.lock:
             try:
                 self.conn.execute("BEGIN IMMEDIATE")
+                existing_batch = self.conn.execute(
+                    "SELECT schema_version FROM batches WHERE id = ?", (batch_id,)
+                ).fetchone()
+                if existing_batch is not None and existing_batch["schema_version"] != schema_version:
+                    raise ValueError(
+                        f"batch {batch_id} 已绑定 schema_version={existing_batch['schema_version']}，"
+                        f"不能追加 {schema_version}"
+                    )
                 existing = {r["id"] for r in self.conn.execute(
                     "SELECT id FROM samples WHERE batch_id = ?", (batch_id,))}
                 dup = existing & {s["sample_id"] for s in samples}
@@ -558,10 +668,18 @@ class SqliteStore(BaseStore):
 
     def import_sparse_samples(self, batch_id, assignments, schema_version):
         """原子导入逐样本 heads；未指定的 head 不生成 assignment。"""
-        self._validate_sparse_import(batch_id, assignments)
+        self._validate_sparse_import(batch_id, assignments, schema_version)
         with self.lock:
             try:
                 self.conn.execute("BEGIN IMMEDIATE")
+                existing_batch = self.conn.execute(
+                    "SELECT schema_version FROM batches WHERE id = ?", (batch_id,)
+                ).fetchone()
+                if existing_batch is not None and existing_batch["schema_version"] != schema_version:
+                    raise ValueError(
+                        f"batch {batch_id} 已绑定 schema_version={existing_batch['schema_version']}，"
+                        f"不能追加 {schema_version}"
+                    )
                 existing = {r["id"] for r in self.conn.execute(
                     "SELECT id FROM samples WHERE batch_id = ?", (batch_id,))}
                 dup = existing & {s["sample_id"] for s in assignments}
@@ -717,7 +835,12 @@ class MysqlStore(BaseStore):
                 rows = cur.fetchall()
             finally:
                 cur.close()
-        return [dict(r) for r in rows]
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["heads"] = self.head_specs(item["schema_version"])
+            result.append(item)
+        return result
 
     def get_resume(self):
         with self.lock:
@@ -755,6 +878,19 @@ class MysqlStore(BaseStore):
             finally:
                 cur.close()
         return bool(row and row["archived_at"])
+
+    def batch_schema_version(self, batch_id):
+        with self.lock:
+            self._ping()
+            cur = self.conn.cursor()
+            try:
+                cur.execute("SELECT schema_version FROM batches WHERE id = %s", (batch_id,))
+                row = cur.fetchone()
+            finally:
+                cur.close()
+        if row is None:
+            raise KeyError(batch_id)
+        return row["schema_version"]
 
     def archive_batch(self, batch_id):
         """标记归档（数据不动，列表隐藏、禁止再标注）。返回 archived_at。"""
@@ -840,7 +976,10 @@ class MysqlStore(BaseStore):
                 if _brow and _brow["archived_at"]:
                     raise ValueError("批次已归档，禁止标注")
                 head = arow["head"]
-                answer = self._validate_input(head, answer, disposition, is_final)
+                cur.execute("SELECT schema_version FROM batches WHERE id = %s", (arow["batch_id"],))
+                version_row = cur.fetchone()
+                schema_version = version_row["schema_version"] if version_row else BASE_SCHEMA_VERSION
+                answer = self._validate_input(head, answer, disposition, is_final, schema_version)
                 cur.execute(
                     "SELECT revision FROM annotations WHERE assignment_id = %s", (assignment_id,)
                 )
@@ -886,18 +1025,25 @@ class MysqlStore(BaseStore):
                 "is_final": bool(is_final_i),
                 "revision": revision,
                 "updated_at": updated_at,
-                "schema_version": brow["schema_version"] if brow else None,
+                "schema_version": brow["schema_version"] if brow else schema_version,
             }
             self._append_jsonl(record)
             return record
 
     def import_samples(self, batch_id, samples, heads, schema_version):
-        self._validate_import(batch_id, samples, heads)
+        self._validate_import(batch_id, samples, heads, schema_version)
         with self.lock:
             self._ping()
             cur = self.conn.cursor()
             try:
                 cur.execute("START TRANSACTION")
+                cur.execute("SELECT schema_version FROM batches WHERE id = %s", (batch_id,))
+                existing_batch = cur.fetchone()
+                if existing_batch is not None and existing_batch["schema_version"] != schema_version:
+                    raise ValueError(
+                        f"batch {batch_id} 已绑定 schema_version={existing_batch['schema_version']}，"
+                        f"不能追加 {schema_version}"
+                    )
                 cur.execute("SELECT id FROM samples WHERE batch_id = %s", (batch_id,))
                 existing = {r["id"] for r in cur.fetchall()}
                 dup = existing & {s["sample_id"] for s in samples}
@@ -944,12 +1090,19 @@ class MysqlStore(BaseStore):
 
     def import_sparse_samples(self, batch_id, assignments, schema_version):
         """原子导入逐样本 heads；未指定的 head 不生成 assignment。"""
-        self._validate_sparse_import(batch_id, assignments)
+        self._validate_sparse_import(batch_id, assignments, schema_version)
         with self.lock:
             self._ping()
             cur = self.conn.cursor()
             try:
                 cur.execute("START TRANSACTION")
+                cur.execute("SELECT schema_version FROM batches WHERE id = %s", (batch_id,))
+                existing_batch = cur.fetchone()
+                if existing_batch is not None and existing_batch["schema_version"] != schema_version:
+                    raise ValueError(
+                        f"batch {batch_id} 已绑定 schema_version={existing_batch['schema_version']}，"
+                        f"不能追加 {schema_version}"
+                    )
                 cur.execute("SELECT id FROM samples WHERE batch_id = %s", (batch_id,))
                 existing = {r["id"] for r in cur.fetchall()}
                 dup = existing & {s["sample_id"] for s in assignments}

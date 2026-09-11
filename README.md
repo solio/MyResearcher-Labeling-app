@@ -6,6 +6,9 @@
 `MyResearcher-ModelTraining/schema/semantic-schema-calibrated-v0.2.1.json`（只读，class_order 未改动）。
 中文释义、问题句、正例、易混淆说明在 `schema/annotation-schema.v1.json`，owner 可直接编辑，服务重启后生效。
 
+v0.3 的五个稀疏辅助因子使用独立的 `semantic-schema-candidate-v0.3` 批次；导入时显式加
+`--schema-version semantic-schema-candidate-v0.3`，不会改变旧 v0.2.1 七头批次。
+
 > 完整交付文档见 **[使用说明与接口说明.md](使用说明与接口说明.md)**（界面操作、HTTP API、CLI、数据契约、localStorage 约定）。
 
 ## 存储模式与配置文件
@@ -52,6 +55,9 @@ python3 tools/gpt_tasks.py add --batch mybatch --file samples.jsonl \
 # 稀疏指定：每行的 heads 独立决定该 sample 生成哪些任务
 python3 tools/gpt_tasks.py add --batch sparse --assignment-file assignments.jsonl --config data/config-gpt.json
 # assignments.jsonl 示例：{"sample_id":"a-001","text":"正文","heads":["stance"]}
+# v0.3 稀疏辅助因子（五个 head，版本绑定）
+python3 tools/gpt_tasks.py add --batch aux-v03 --assignment-file assignments-v03.jsonl \
+  --schema-version semantic-schema-candidate-v0.3 --config data/config-gpt.json
 
 # 查完成度（判断批次是否填完；total=任务数 done=final或终态 finals=is_final=1）
 python3 tools/gpt_tasks.py status --batch mybatch --config data/config-gpt.json

@@ -19,6 +19,7 @@ sys.path.insert(0, str(TOOLS_DIR))
 import server as server_mod  # noqa: E402
 import import_batch  # noqa: E402
 import export_annotations as export_mod  # noqa: E402
+from storage import V03_SCHEMA_VERSION  # noqa: E402
 
 SCHEMA_PATH = PROJECT_ROOT / "schema" / "annotation-schema.v1.json"
 SCHEMA_VERSION = "semantic-schema-calibrated-v0.2.1"
@@ -161,6 +162,43 @@ class TestIdempotentUpsert(ServerTestBase):
         self.assertEqual(r2["answer"], "BULL")
         self.assertIsNone(r2["disposition"])
         self.assertEqual(r2["is_final"], False)
+
+
+class TestV03AuxiliaryApi(ServerTestBase):
+    def test_batches_and_assignment_api_expose_versioned_sparse_head(self):
+        assignments = [{
+            "sample_id": "v-1",
+            "text": "辅助因子 API 测试",
+            "title": "标题",
+            "metadata": {"source": "fixture"},
+            "heads": ["arousal_level", "market_scope"],
+        }]
+        server_mod.Handler.store.import_sparse_samples("v03-api", assignments, V03_SCHEMA_VERSION)
+
+        code, batches = self.get("/api/batches")
+        self.assertEqual(code, 200)
+        batch = next(b for b in batches if b["id"] == "v03-api")
+        self.assertEqual(batch["schema_version"], V03_SCHEMA_VERSION)
+        arousal = next(h for h in batch["heads"] if h["id"] == "arousal_level")
+        self.assertEqual(arousal["task_type"], "ordered_single_label")
+        self.assertEqual(arousal["ordered_values"], ["LOW", "MEDIUM", "HIGH"])
+
+        code, rows = self.get("/api/assignments?batch_id=v03-api&head=arousal_level")
+        self.assertEqual(code, 200)
+        self.assertEqual([r["id"] for r in rows], ["v03-api:v-1:arousal_level"])
+        code, detail = self.get("/api/assignment?id=v03-api:v-1:arousal_level")
+        self.assertEqual(code, 200)
+        self.assertEqual(detail["schema_version"], V03_SCHEMA_VERSION)
+        self.assertEqual(detail["glossary"]["task_type"], "ordered_single_label")
+        self.assertEqual(detail["glossary"]["labels"][0]["id"], "LOW")
+
+        code, record = self.post({
+            "assignment_id": "v03-api:v-1:arousal_level",
+            "answer": "MEDIUM",
+            "is_final": True,
+        })
+        self.assertEqual(code, 200, record)
+        self.assertEqual(record["schema_version"], V03_SCHEMA_VERSION)
 
 
 class TestArchive(ServerTestBase):

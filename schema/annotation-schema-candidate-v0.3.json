@@ -1,0 +1,114 @@
+{
+  "annotation_schema_version": "annotation-schema.v1",
+  "schema_version": "semantic-schema-candidate-v0.3",
+  "base_schema_version": "semantic-schema-calibrated-v0.2.1",
+  "source": {
+    "repository": "MyResearcher-ModelTraining",
+    "commit": "fae2bfa93d3bd3e38229b8a7377468d60617b2a5",
+    "path": "schema/semantic-schema-candidate-v0.3.json"
+  },
+  "head_order": [
+    "expectation_phase",
+    "arousal_level",
+    "desired_price_direction",
+    "market_scope",
+    "discourse_focus"
+  ],
+  "record_contract": {
+    "record_type": "v03_sparse_auxiliary_assignment",
+    "required_fields": ["sample_id", "head", "answer", "is_final", "schema_version"],
+    "missing_factor": "omit the factor assignment; unfinished answer is null with is_final=false",
+    "missing_loss_mask": 0,
+    "unknown_is_explicit": true
+  },
+  "heads": {
+    "expectation_phase": {
+      "type": "single",
+      "task_type": "single_label",
+      "name_zh": "预期时态",
+      "question": "文本中的预期是尚未发生还是已经发生/正在发生？",
+      "definition_zh": "表达文本中的预期是尚未发生还是已经发生/正在发生。",
+      "select_when": "文本有可判断的结果或事件时态线索。",
+      "not_select_when": "没有时态线索或该因子不适用。",
+      "applicable_when": "文本表达情绪或对结果的期待。",
+      "labels": [
+        {"id": "ANTICIPATED", "name_zh": "预期中", "description": "结果或事件尚未发生，文本在期待其发生。", "applicable_when": "存在未来结果期待。"},
+        {"id": "ONGOING_OR_REALIZED", "name_zh": "进行中或已实现", "description": "事件正在进行或结果已经发生。", "applicable_when": "存在当前或已发生事件。"},
+        {"id": "UNKNOWN", "name_zh": "无法判断", "description": "文本存在时态问题但无法确定。", "applicable_when": "时态问题存在但证据不足。"}
+      ]
+    },
+    "arousal_level": {
+      "type": "single",
+      "task_type": "ordered_single_label",
+      "name_zh": "情绪唤醒强度",
+      "question": "文本表达的情绪或叙事唤醒强度是？",
+      "definition_zh": "表达情绪或叙事的相对唤醒强度。",
+      "select_when": "文本有可判断的情绪强弱线索。",
+      "not_select_when": "没有情绪强度线索或该因子不适用。",
+      "applicable_when": "emotion_primary 不是 NONE_EXPLICIT 且文本有强度线索。",
+      "ordered_values": ["LOW", "MEDIUM", "HIGH"],
+      "labels": [
+        {"id": "LOW", "name_zh": "低", "description": "平静、弱表达或低唤醒情绪。", "applicable_when": "存在可判断的低唤醒语气。"},
+        {"id": "MEDIUM", "name_zh": "中", "description": "有情绪但强度居中的表达。", "applicable_when": "存在中等唤醒线索。"},
+        {"id": "HIGH", "name_zh": "高", "description": "激动、恐慌、愤怒或强烈动员表达。", "applicable_when": "存在高唤醒线索。"},
+        {"id": "UNKNOWN", "name_zh": "无法判断", "description": "存在强度问题但无法确定等级。", "applicable_when": "强度问题存在但证据不足。"}
+      ]
+    },
+    "desired_price_direction": {
+      "type": "single",
+      "task_type": "single_label",
+      "name_zh": "期望价格方向",
+      "question": "文本表达的期望价格方向是？",
+      "definition_zh": "表达文本期待的价格结果方向，而不是作者是否交易。",
+      "select_when": "文本有价格方向或稳定区间线索。",
+      "not_select_when": "只有作者动作、情绪或无方向陈述。",
+      "applicable_when": "文本表达对价格结果的期待。",
+      "labels": [
+        {"id": "UP", "name_zh": "上涨", "description": "期待价格向上。", "applicable_when": "存在明确向上结果。"},
+        {"id": "DOWN", "name_zh": "下跌", "description": "期待价格向下。", "applicable_when": "存在明确向下结果。"},
+        {"id": "RANGE_OR_STABLE", "name_zh": "区间或稳定", "description": "期待横盘、震荡或稳定价格。", "applicable_when": "存在稳定或区间结果。"},
+        {"id": "NON_DIRECTIONAL", "name_zh": "非方向性", "description": "文本不表达价格方向。", "applicable_when": "价格方向不适用。"},
+        {"id": "UNKNOWN", "name_zh": "无法判断", "description": "存在方向问题但方向不可确定。", "applicable_when": "方向问题存在但证据不足。"}
+      ]
+    },
+    "market_scope": {
+      "type": "multi",
+      "task_type": "multi_label",
+      "allow_multiple": true,
+      "unknown_is_exclusive": true,
+      "name_zh": "市场范围",
+      "question": "市场语境具体涉及哪些范围？（可多选）",
+      "definition_zh": "在 emotion_target=MARKET 时补充具体市场语境。",
+      "select_when": "emotion_target 为 MARKET 且文本有范围线索。",
+      "not_select_when": "emotion_target 不是 MARKET 或无范围线索。",
+      "applicable_when": "emotion_target=MARKET。",
+      "labels": [
+        {"id": "TRADING_FLOW", "name_zh": "交易流", "description": "主力、散户、资金或交易行为环境。", "applicable_when": "市场对象是交易参与和资金流。"},
+        {"id": "INDUSTRY_PRODUCT_REGION", "name_zh": "行业/产品/地区", "description": "行业、产品、地区或政策市场环境。", "applicable_when": "市场对象是行业产品或地区。"},
+        {"id": "BROAD_MARKET", "name_zh": "大盘", "description": "整个市场或广泛市场状态。", "applicable_when": "市场对象是广泛大盘。"},
+        {"id": "UNKNOWN", "name_zh": "无法判断", "description": "市场范围存在但无法确定。", "applicable_when": "市场范围问题存在但证据不足。"}
+      ]
+    },
+    "discourse_focus": {
+      "type": "multi",
+      "task_type": "multi_label",
+      "allow_multiple": true,
+      "unknown_is_exclusive": true,
+      "name_zh": "话语焦点",
+      "question": "文本的话语焦点有哪些？（可多选）",
+      "definition_zh": "表达文本同时指向资产、作者、他人、叙事或市场的焦点。",
+      "select_when": "文本存在可辨识的话语对象或角色焦点。",
+      "not_select_when": "无焦点线索或该因子不适用。",
+      "applicable_when": "需要补充 target_mode 未表达的焦点。",
+      "labels": [
+        {"id": "ASSET_OR_COMPANY", "name_zh": "资产或公司", "description": "焦点是标的资产或公司本身。", "applicable_when": "资产本身是话语焦点。"},
+        {"id": "AUTHOR_VIEWPOINT", "name_zh": "作者观点", "description": "作者的判断、态度或观点表达。", "applicable_when": "作者观点是独立焦点。"},
+        {"id": "AUTHOR_ACTION_OR_POSITION", "name_zh": "作者动作或持仓", "description": "作者的交易动作、持仓或配置行为。", "applicable_when": "作者动作或持仓是独立焦点。"},
+        {"id": "OTHER_PERSON_OR_AUDIENCE", "name_zh": "他人或受众", "description": "焦点是其他人、股东、读者或受众。", "applicable_when": "他人或受众是话语对象。"},
+        {"id": "CLAIM_OR_NARRATIVE", "name_zh": "主张或叙事", "description": "焦点是传闻、小作文、争论或论坛叙事。", "applicable_when": "主张或叙事本身是焦点。"},
+        {"id": "MARKET_OR_INDUSTRY", "name_zh": "市场或行业", "description": "焦点是市场、行业或产品环境。", "applicable_when": "市场或行业环境是焦点。"},
+        {"id": "UNKNOWN", "name_zh": "无法判断", "description": "存在话语焦点问题但无法确定。", "applicable_when": "焦点问题存在但证据不足。"}
+      ]
+    }
+  }
+}
